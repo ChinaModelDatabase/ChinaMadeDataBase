@@ -1,0 +1,21 @@
+[package]
+name = "mdb-backup"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "数据备份与 Point-in-Time Recovery (PITR)"
+
+[dependencies]
+mdb-common = { workspace = true }
+mdb-doc = { workspace = true }
+mdb-storage = { workspace = true }
+mdb-crypto = { workspace = true }
+
+[dev-dependencies]
+mdb-common = { workspace = true }
+
+[lints.rust]
+missing_debug_implementations = "warn"
+unsafe_code = "forbid"

@@ -1,0 +1,19 @@
+[package]
+name = "mdb-tls"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MDB TLCP/TLS transport encryption：SM4-GCM + SM3 + 简化密钥交换"
+
+[dependencies]
+mdb-common = { workspace = true }
+mdb-crypto = { workspace = true }
+
+[dev-dependencies]
+mdb-tls = { path = "." }
+
+[lints.rust]
+missing_debug_implementations = "warn"
+unsafe_code = "forbid"

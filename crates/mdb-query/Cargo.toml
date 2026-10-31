@@ -1,0 +1,16 @@
+[package]
+name = "mdb-query"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "查询引擎：优化器、算子、聚合 Pipeline、Explain"
+
+[dependencies]
+mdb-common = { workspace = true }
+mdb-doc = { workspace = true }
+
+[lints.rust]
+missing_debug_implementations = "warn"
+unsafe_code = "forbid"

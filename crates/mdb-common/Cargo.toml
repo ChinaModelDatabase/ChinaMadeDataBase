@@ -1,0 +1,14 @@
+[package]
+name = "mdb-common"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MDB 公共基础库：错误码、配置、结构化日志、指标、运行参数"
+
+[dependencies]
+
+[lints.rust]
+missing_debug_implementations = "warn"
+unsafe_code = "forbid"

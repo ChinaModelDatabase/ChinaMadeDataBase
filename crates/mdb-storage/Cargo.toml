@@ -1,0 +1,19 @@
+[package]
+name = "mdb-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "LSM-Tree 存储引擎：SSTable、WAL、MemTable、Compaction、校验与修复"
+
+[dependencies]
+mdb-common = { workspace = true }
+mdb-crypto = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+zstd = { workspace = true }
+
+[lints.rust]
+missing_debug_implementations = "warn"
+unsafe_code = "forbid"

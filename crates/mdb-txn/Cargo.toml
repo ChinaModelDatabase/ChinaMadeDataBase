@@ -1,0 +1,15 @@
+[package]
+name = "mdb-txn"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "事务与 MVCC：快照隔离、写冲突检测、2PC 协调、TSO 分配"
+
+[dependencies]
+mdb-common = { workspace = true }
+
+[lints.rust]
+missing_debug_implementations = "warn"
+unsafe_code = "forbid"

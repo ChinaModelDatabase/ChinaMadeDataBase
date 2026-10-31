@@ -1,0 +1,15 @@
+[package]
+name = "mdb-doc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "BSON 文档模型：自研编解码、类型全序、Extended JSON、BSON spec 测试向量"
+
+[dependencies]
+mdb-common = { workspace = true }
+
+[lints.rust]
+missing_debug_implementations = "warn"
+unsafe_code = "forbid"

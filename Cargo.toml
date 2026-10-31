@@ -1,0 +1,83 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/mdb-common",
+    "crates/mdb-runtime",
+    "crates/mdb-crypto",
+    "crates/mdb-doc",
+    "crates/mdb-wire",
+    "crates/mdb-storage",
+    "crates/mdb-index",
+    "crates/mdb-txn",
+    "crates/mdb-query",
+    "crates/mdb-repl",
+    "crates/mdb-router",
+    "crates/mdb-server",
+    "crates/mdb-cli",
+    "crates/mdb-test",
+    "crates/mdb-backup",
+    "crates/mdb-tls",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "Apache-2.0"
+repository = "https://gitee.com/mdb-official/mdb"
+authors = ["MDB Team"]
+description = "MDB - 信创自主可控文档数据库（MongoDB Wire Protocol 兼容）"
+
+[workspace.dependencies]
+mdb-common = { path = "crates/mdb-common", version = "0.1.0" }
+mdb-runtime = { path = "crates/mdb-runtime", version = "0.1.0" }
+mdb-crypto = { path = "crates/mdb-crypto", version = "0.1.0" }
+mdb-doc = { path = "crates/mdb-doc", version = "0.1.0" }
+mdb-wire = { path = "crates/mdb-wire", version = "0.1.0" }
+mdb-storage = { path = "crates/mdb-storage", version = "0.1.0" }
+mdb-index = { path = "crates/mdb-index", version = "0.1.0" }
+mdb-txn = { path = "crates/mdb-txn", version = "0.1.0" }
+mdb-query = { path = "crates/mdb-query", version = "0.1.0" }
+mdb-repl = { path = "crates/mdb-repl", version = "0.1.0" }
+mdb-router = { path = "crates/mdb-router", version = "0.1.0" }
+mdb-server = { path = "crates/mdb-server", version = "0.1.0" }
+mdb-tls = { path = "crates/mdb-tls", version = "0.1.0" }
+mdb-backup = { path = "crates/mdb-backup", version = "0.1.0" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+regex-lite = "0.1"
+rustls = { version = "0.23", features = ["ring"] }
+rustls-pemfile = "2"
+zstd = "0.13"
+
+# ---------------------------------------------------------------------------
+# 构建优化：MDB 性能高度依赖 profile，按目标平台分档。
+# release 开启 LTO + codegen-units=1，牺牲构建时间换运行时性能。
+# ---------------------------------------------------------------------------
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "unwind"
+debug = 1
+overflow-checks = false
+incremental = false
+strip = "none"
+
+# 故障注入 / 校验和回归用的场景：需要 debug-assertions 与保留符号
+[profile.sim]
+inherits = "release"
+debug = true
+overflow-checks = true
+debug-assertions = true
+
+[profile.bench]
+inherits = "release"
+debug = true
+
+# 关键：禁止隐式引入依赖。CI 需在 cargo-deny 之外额外做此项检查。
+# 新增第三方依赖必须走 RFC：
+#   1) 许可证在 ALLOW_LICENSES 白名单内
+#   2) 无 GPL/AGPL/SSPL 传染
+#   3) 可离线 vendor 且源码可审计
+#   4) 经架构组 + 安全组双签

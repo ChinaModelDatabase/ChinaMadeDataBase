@@ -1,0 +1,16 @@
+[package]
+name = "mdb-index"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "索引：B-Tree、跳表、TTL、Text 倒排、2dsphere、向量 HNSW"
+
+[dependencies]
+mdb-common = { workspace = true }
+mdb-doc = { workspace = true }
+
+[lints.rust]
+missing_debug_implementations = "warn"
+unsafe_code = "forbid"

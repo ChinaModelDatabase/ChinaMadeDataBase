@@ -1,0 +1,17 @@
+[package]
+name = "mdb-wire"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MongoDB Wire Protocol：OP_MSG/OP_QUERY/OP_REPLY/OP_COMPRESSED、SCRAM 握手"
+
+[dependencies]
+mdb-common = { workspace = true }
+mdb-crypto = { workspace = true }
+mdb-doc = { workspace = true }
+
+[lints.rust]
+missing_debug_implementations = "warn"
+unsafe_code = "forbid"

@@ -1,0 +1,62 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+/build/
+/cmake-build-*/
+
+# Node.js
+node_modules/
+dist/
+*.js.map
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+
+# Java
+*.class
+*.jar
+target/
+
+# C/C++ build
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Test output
+*.log
+*.tmp
+check*.txt
+crates/*/test_*/
+
+# Agent workspace
+.sisyphus/
+
+# Environment
+.env
+.env.local
+
+# Coverage
+*.profraw
+*.profdata
+coverage/
