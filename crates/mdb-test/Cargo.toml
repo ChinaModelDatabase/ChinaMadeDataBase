@@ -1,0 +1,15 @@
+[package]
+name = "mdb-test"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "差分测试框架：wire 协议差分、故障注入、基准、BSON 向量回归"
+
+[dependencies]
+mdb-common = { workspace = true }
+
+[lints.rust]
+missing_debug_implementations = "warn"
+unsafe_code = "forbid"

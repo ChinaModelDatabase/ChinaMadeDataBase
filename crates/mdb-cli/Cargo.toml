@@ -1,0 +1,15 @@
+[package]
+name = "mdb-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "mdb 客户端：替代 mongosh"
+
+[dependencies]
+mdb-common = { workspace = true }
+
+[lints.rust]
+missing_debug_implementations = "warn"
+unsafe_code = "forbid"

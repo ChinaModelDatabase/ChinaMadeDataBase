@@ -1,0 +1,29 @@
+[package]
+name = "mdb-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "mongod 替代：连接处理、命令分发、用户认证、权限、指标暴露"
+
+[dependencies]
+mdb-common = { workspace = true }
+mdb-crypto = { workspace = true }
+mdb-doc = { workspace = true }
+mdb-wire = { workspace = true }
+mdb-storage = { workspace = true }
+mdb-query = { workspace = true }
+mdb-index = { workspace = true }
+mdb-txn = { workspace = true }
+mdb-repl = { workspace = true }
+mdb-router = { workspace = true }
+mdb-backup = { workspace = true }
+mdb-tls = { workspace = true }
+regex-lite = { workspace = true }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+
+[lints.rust]
+missing_debug_implementations = "warn"
+unsafe_code = "forbid"

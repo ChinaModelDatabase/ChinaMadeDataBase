@@ -1,0 +1,16 @@
+[package]
+name = "mdb-router"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "路由与分片：mongos 替代、Config Server、分片路由表、Balancer"
+
+[dependencies]
+mdb-common = { workspace = true }
+mdb-doc = { workspace = true }
+
+[lints.rust]
+missing_debug_implementations = "warn"
+unsafe_code = "forbid"

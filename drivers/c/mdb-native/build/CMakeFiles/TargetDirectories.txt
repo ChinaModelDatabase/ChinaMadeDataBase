@@ -1,0 +1,9 @@
+D:/yunxiang/MDB/drivers/c/mdb-native/build/CMakeFiles/mdb_native.dir
+D:/yunxiang/MDB/drivers/c/mdb-native/build/CMakeFiles/mdb_native_tests.dir
+D:/yunxiang/MDB/drivers/c/mdb-native/build/CMakeFiles/mdb_native_example.dir
+D:/yunxiang/MDB/drivers/c/mdb-native/build/CMakeFiles/edit_cache.dir
+D:/yunxiang/MDB/drivers/c/mdb-native/build/CMakeFiles/rebuild_cache.dir
+D:/yunxiang/MDB/drivers/c/mdb-native/build/CMakeFiles/list_install_components.dir
+D:/yunxiang/MDB/drivers/c/mdb-native/build/CMakeFiles/install.dir
+D:/yunxiang/MDB/drivers/c/mdb-native/build/CMakeFiles/install/local.dir
+D:/yunxiang/MDB/drivers/c/mdb-native/build/CMakeFiles/install/strip.dir

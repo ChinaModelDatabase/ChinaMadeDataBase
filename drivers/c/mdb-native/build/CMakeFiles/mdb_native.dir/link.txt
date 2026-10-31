@@ -1,0 +1,2 @@
+C:\Strawberry\c\bin\ar.exe qc libmdb_native.a CMakeFiles/mdb_native.dir/src/bson.c.obj CMakeFiles/mdb_native.dir/src/wire.c.obj CMakeFiles/mdb_native.dir/src/crc32c.c.obj CMakeFiles/mdb_native.dir/src/connection.c.obj CMakeFiles/mdb_native.dir/src/client.c.obj CMakeFiles/mdb_native.dir/src/cursor.c.obj
+C:\Strawberry\c\bin\ranlib.exe libmdb_native.a

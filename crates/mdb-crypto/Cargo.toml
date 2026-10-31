@@ -1,0 +1,15 @@
+[package]
+name = "mdb-crypto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MDB 密码学原语：SHA-256/1、MD5、HMAC、PBKDF2、SCRAM、SM2/SM3/SM4、Base64"
+
+[dependencies]
+mdb-common = { workspace = true }
+
+[lints.rust]
+missing_debug_implementations = "warn"
+unsafe_code = "forbid"

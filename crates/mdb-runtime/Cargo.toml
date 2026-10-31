@@ -1,0 +1,15 @@
+[package]
+name = "mdb-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MDB 异步运行时：自研 io_uring/epoll 反应器、IO 上下文、任务调度"
+
+[dependencies]
+mdb-common = { workspace = true }
+
+[lints.rust]
+missing_debug_implementations = "warn"
+unsafe_code = "forbid"

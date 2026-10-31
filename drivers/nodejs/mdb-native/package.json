@@ -1,0 +1,19 @@
+{
+  "name": "mdb-native",
+  "version": "1.0.0",
+  "description": "Self-contained Node.js driver for MDB using only built-in modules",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "typescript": "^7.0.2"
+  }
+}

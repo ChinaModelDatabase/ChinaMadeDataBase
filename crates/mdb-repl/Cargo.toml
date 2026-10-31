@@ -1,0 +1,16 @@
+[package]
+name = "mdb-repl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "复制与高可用：Raft 选主、复制流、Oplog、Change Stream"
+
+[dependencies]
+mdb-common = { workspace = true }
+mdb-doc = { workspace = true }
+
+[lints.rust]
+missing_debug_implementations = "warn"
+unsafe_code = "forbid"
