@@ -198,10 +198,10 @@ SSTable、compaction 和启动恢复。500 文档重启、含 NUL 的 `_id` 键�
 | `OP_QUERY` (2004) | 支持（遗留） | 返回 `CommandNotImplemented` | 缺失 |
 | `OP_REPLY` (1) | 支持 | 未实现 | 缺失 |
 | `OP_COMPRESSED` (2012) | 支持 snappy/zstd/zlib | 未实现，故 `hello` 不能声明压缩 | 缺失 |
-| `maxWireVersion` | 25 | `MAX_WIRE_VERSION = 21` (MongoDB 7.0) | 落后 |
+| `maxWireVersion` | 25 | `MAX_WIRE_VERSION = 25` (MongoDB 8.0) | 达标（但 `OP_COMPRESSED` 仍缺失，见下行） |
 | 压缩 | 默认开启 | 无 | 缺失 |
 
-`wireVersion: 21` 意味着 MDB 自称兼容 MongoDB 7.0。官方驱动会据此启用
+`wireVersion: 25` 意味着 MDB 自称兼容 MongoDB 8.0。官方驱动会据此启用
 批量写、retryable writes、`OP_COMPRESSED` 等特性，而这些在服务端不存在。
 
 **`OP_QUERY` 的处理有个隐患**：非 `OP_MSG` 的 opcode 会返回错误并**直接断开连接**。
@@ -447,7 +447,7 @@ BSON 能携带 `JavaScript` / `JavaScriptWithScope` 类型，但仅用于字节�
 
 **重要的互操作性问题**：Java、Python、Node、Go 的**官方 MongoDB 驱动**会
 在握手后根据 `maxWireVersion` 启用批量写和 retryable writes。
-MDB 声明 `wireVersion 21` 但不支持 `OP_COMPRESSED`，
+MDB 声明 `wireVersion 25` 但不支持 `OP_COMPRESSED`，
 官方驱动与 MDB 的实际兼容性未经端到端验证。
 `drivers/nodejs/mdb-node/node_modules` 里正好有官方 Node 驱动，可用于互操作测试。
 
@@ -562,7 +562,7 @@ MDB 声明 `wireVersion 21` 但不支持 `OP_COMPRESSED`，
 12. 真实 profiler、`system.profile`、慢查询阈值。
 13. 实现 `mdb-cli` 与 `mdb-runtime`。
 14. 用官方 MongoDB 驱动（Java/Python/Node/Go）做端到端兼容测试，
-    据结果决定 `maxWireVersion` 报 21 还是下调。
+    据结果决定 `maxWireVersion` 报 25 还是下调。
 
 ---
 

@@ -85,7 +85,6 @@ func encodeElements(buf *bytes.Buffer, doc map[string]interface{}) error {
 func encodeElement(buf *bytes.Buffer, name string, val interface{}) error {
 	var typ byte
 	var raw []byte
-	var err error
 
 	switch v := val.(type) {
 	case float64:
@@ -108,11 +107,7 @@ func encodeElement(buf *bytes.Buffer, name string, val interface{}) error {
 		raw = embedded
 	case []interface{}:
 		typ = BSONTypeArray
-		arrMap := make(map[string]interface{})
-		for i, item := range v {
-			arrMap[fmt.Sprintf("%d", i)] = item
-		}
-		embedded, err := Encode(arrMap)
+		embedded, err := EncodeArray(v)
 		if err != nil {
 			return err
 		}
@@ -350,7 +345,21 @@ func decodeValue(r *bytes.Reader, typ byte) (interface{}, error) {
 	}
 }
 
-// EncodeArray encodes a slice to BSON binary.
+// EncodeArray encodes a slice to BSON array binary ("index" keys in order).
 func EncodeArray(arr []interface{}) ([]byte, error) {
-	return Encode(arr)
+	var buf bytes.Buffer
+	// Reserve 4 bytes for size
+	buf.Write(make([]byte, 4))
+
+	for i, item := range arr {
+		if err := encodeElement(&buf, fmt.Sprintf("%d", i), item); err != nil {
+			return nil, err
+		}
+	}
+	buf.WriteByte(0x00)
+
+	data := buf.Bytes()
+	binary.LittleEndian.PutUint32(data[0:4], uint32(len(data)))
+
+	return data, nil
 }

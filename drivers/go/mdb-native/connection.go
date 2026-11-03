@@ -17,7 +17,7 @@ type MdbConnection struct {
 
 // Dial connects to an MDB server.
 func Dial(host string, port int) (*MdbConnection, error) {
-	addr := fmt.Sprintf("%s:%d", host, port)
+	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("mdb: dial %s: %w", addr, err)

@@ -4,6 +4,7 @@ import com.mongodb.client.ChangeStreamIterable;
 import com.mongodb.client.MongoChangeStreamCursor;
 import com.mongodb.client.model.changestream.ChangeStreamDocument;
 import com.mongodb.client.model.changestream.FullDocument;
+import org.bson.BsonDocument;
 import org.bson.BsonTimestamp;
 import org.bson.BsonValue;
 import org.bson.Document;
@@ -151,14 +152,14 @@ public class MdbChangeStream implements AutoCloseable {
             return;
         }
         ChangeStreamIterable<Document> iter = iterable;
-        if (!pipeline.isEmpty()) {
-            iter = iterable.pipeline(pipeline);
-        }
+        // Java 驱动的 ChangeStreamIterable 没有 pipeline(...)：pipeline 只能在
+        // `watch(pipeline)` 打开流时指定（见 MdbCollection#watch / MdbDatabase#watch）。
+        // 这里保留 `pipeline()` 只为兼容既有调用，真正过滤请在打开流时传入。
         if (resumeAfter != null) {
-            iter = iter.resumeAfter(resumeAfter);
+            iter = iter.resumeAfter(asBsonDocument(resumeAfter));
         }
         if (startAfter != null) {
-            iter = iter.startAfter(startAfter);
+            iter = iter.startAfter(asBsonDocument(startAfter));
         }
         if (startAtOperationTime != null) {
             iter = iter.startAtOperationTime(startAtOperationTime);
@@ -167,5 +168,13 @@ public class MdbChangeStream implements AutoCloseable {
             iter = iter.maxAwaitTime(maxAwaitTimeMs, java.util.concurrent.TimeUnit.MILLISECONDS);
         }
         cursor = iter.cursor();
+    }
+
+    /** 驱动要求 resumeAfter/startAfter 必须是 BsonDocument，而对外 API 收的是任意 BsonValue。 */
+    private static BsonDocument asBsonDocument(BsonValue token) {
+        if (token instanceof BsonDocument) {
+            return (BsonDocument) token;
+        }
+        return new BsonDocument("_data", token);
     }
 }

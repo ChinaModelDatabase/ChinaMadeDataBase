@@ -33,11 +33,16 @@ class MdbClient:
     @classmethod
     def from_uri(cls, uri: str, **kwargs: Any) -> "MdbClient":
         parsed = parse_uri(uri)
-        host = parsed.get("hosts", [("localhost", 27017)])[0][0]
-        port = parsed.get("hosts", [("localhost", 27017)])[0][1]
+        # pymongo 的 parse_uri 把主机列表放在 `nodelist`（不是 `hosts`）。
+        # 取错键会让 URI 里的地址被静默换成 localhost:27017 —— 连到别的实例
+        # 而不是报错，非常难查。
+        hosts = parsed.get("nodelist") or parsed.get("hosts") or [("localhost", 27017)]
+        host = hosts[0][0]
+        port = hosts[0][1] if len(hosts[0]) > 1 else 27017
         username = parsed.get("username")
         password = parsed.get("password")
-        auth_source = parsed.get("options", {}).get("authsource", "admin")
+        options = parsed.get("options", {}) or {}
+        auth_source = options.get("authSource") or options.get("authsource") or "admin"
         database = parsed.get("database")
 
         client = cls(

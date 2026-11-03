@@ -107,16 +107,17 @@ impl ColumnFamily {
             for fm in frozen.iter().rev() {
                 let lo = make_internal_key(user_key, snapshot_seqno);
                 let hi = make_internal_key(user_key, 0);
-                for (ik, val) in fm.map.range(lo..=hi) {
-                    if let Some(sn) = parse_internal_key(ik).map(|(_, sn)| sn) {
-                        if ik_user_key_eq(ik, user_key) && sn <= snapshot_seqno {
-                            if val.is_empty() {
-                                return Ok(None);
-                            }
-                            return Ok(Some(val.clone()));
+                // 与 memtable 同理：internal key 有序，第一条命中即最新可见版本。
+                let Some((ik, val)) = fm.map.range(lo..=hi).next() else {
+                    continue;
+                };
+                if let Some(sn) = parse_internal_key(ik).map(|(_, sn)| sn) {
+                    if ik_user_key_eq(ik, user_key) && sn <= snapshot_seqno {
+                        if val.is_empty() {
+                            return Ok(None);
                         }
+                        return Ok(Some(val.clone()));
                     }
-                    break;
                 }
             }
         }

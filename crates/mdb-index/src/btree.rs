@@ -22,7 +22,9 @@ type NodeId = usize;
 // ---------------------------------------------------------------------------
 
 const TAG_MIN_KEY: u8 = 0x00;
-const TAG_NULL: u8 = 0x01;
+// BSON 里 double 是 0x01、null 是 0x0A。原来两个都用 0x01，靠"长度不同"
+// 才勉强不出错——任何长度相近的场景都会互相认错。
+const TAG_NULL: u8 = 0x0A;
 const TAG_INT32: u8 = 0x10;
 const TAG_INT64: u8 = 0x12;
 const TAG_DOUBLE: u8 = 0x01;
@@ -30,6 +32,10 @@ const TAG_STRING: u8 = 0x02;
 const TAG_BOOL: u8 = 0x08;
 const TAG_DATETIME: u8 = 0x09;
 const TAG_OBJ_ID: u8 = 0x07;
+// 复合索引的键是文档/数组：必须能原样往返，否则读写索引时直接 panic。
+const TAG_DOCUMENT: u8 = 0x03;
+const TAG_ARRAY: u8 = 0x04;
+const TAG_BINARY: u8 = 0x05;
 const TAG_TIMESTAMP: u8 = 0x11;
 const TAG_MAX_KEY: u8 = 0x7F;
 
@@ -111,10 +117,25 @@ fn bson_to_bytes(b: &Bson) -> Vec<u8> {
         }
         Bson::Binary(bin) => {
             let mut buf = Vec::with_capacity(6 + bin.bytes.len());
-            buf.push(TAG_OBJ_ID);
+            buf.push(TAG_BINARY);
             buf.push(bin.subtype.code());
             buf.extend_from_slice(&(bin.bytes.len() as u32).to_le_bytes());
             buf.extend_from_slice(&bin.bytes);
+            buf
+        }
+        Bson::Document(d) => {
+            let mut buf = vec![TAG_DOCUMENT];
+            buf.extend_from_slice(&mdb_doc::codec::to_bytes(d).unwrap_or_default());
+            buf
+        }
+        Bson::Array(arr) => {
+            // 数组按"下标为键的文档"编码，反序列化时再按插入顺序还原。
+            let mut wrapper = mdb_doc::Document::new();
+            for (i, v) in arr.iter().enumerate() {
+                wrapper.insert(i.to_string(), v.clone());
+            }
+            let mut buf = vec![TAG_ARRAY];
+            buf.extend_from_slice(&mdb_doc::codec::to_bytes(&wrapper).unwrap_or_default());
             buf
         }
         Bson::Decimal128(d) => {
@@ -176,6 +197,22 @@ fn bson_from_bytes(bytes: &[u8]) -> Option<Bson> {
         }
         TAG_MIN_KEY => Some(Bson::MinKey),
         TAG_MAX_KEY => Some(Bson::MaxKey),
+        TAG_DOCUMENT => mdb_doc::codec::from_bytes(&bytes[1..]).ok().map(Bson::Document),
+        TAG_ARRAY => {
+            let wrapper = mdb_doc::codec::from_bytes(&bytes[1..]).ok()?;
+            Some(Bson::Array(wrapper.iter().map(|(_, v)| v.clone()).collect()))
+        }
+        TAG_BINARY if bytes.len() >= 6 => {
+            let len = u32::from_le_bytes(bytes[2..6].try_into().ok()?) as usize;
+            if bytes.len() >= 6 + len {
+                Some(Bson::Binary(mdb_doc::Binary::new(
+                    mdb_doc::BinarySubtype::from_u8(bytes[1]),
+                    bytes[6..6 + len].to_vec(),
+                )))
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
@@ -1434,7 +1471,7 @@ mod tests {
         let values: Vec<Bson> = vec![
             Bson::Int32(42),
             Bson::Int64(-123456789),
-            Bson::Double(3.14),
+            Bson::Double(3.5),
             Bson::String("hello world".into()),
             Bson::Boolean(true),
             Bson::Boolean(false),

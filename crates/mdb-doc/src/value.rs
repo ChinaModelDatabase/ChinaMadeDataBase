@@ -339,9 +339,18 @@ impl Document {
         Self { entries: Vec::with_capacity(n) }
     }
 
-    /// 追加字段（保持插入顺序）。
+    /// 写入字段（保持插入顺序）。
+    ///
+    /// 键已存在时**覆盖**：BSON 文档不允许重复键，追加语义会悄悄产出非法
+    /// 报文（我们自己的解析器会报 `duplicate key`，驱动虽然容忍但读到的值
+    /// 取决于实现）。已经踩过两次：`cursor.id` 被写了两遍、`ok` 被写了两遍。
     pub fn insert(&mut self, key: impl Into<String>, value: impl Into<Bson>) -> &mut Self {
-        self.entries.push((key.into(), value.into()));
+        let key = key.into();
+        let value = value.into();
+        match self.entries.iter_mut().find(|(k, _)| *k == key) {
+            Some(slot) => slot.1 = value,
+            None => self.entries.push((key, value)),
+        }
         self
     }
 

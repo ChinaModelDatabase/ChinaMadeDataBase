@@ -130,6 +130,17 @@ impl Digest<16, 64> for Md5 {
     }
 }
 
+/// SCRAM-SHA-1 的口令输入：`md5Hex(username + ":mongo:" + password)`。
+///
+/// MongoDB 的 SCRAM-SHA-1 凭证不是直接用明文口令派生，而是先用这个
+/// digest（历史上为了与 MONGODB-CR 共用同一份口令材料）。官方驱动
+/// （pymongo 等）在 SCRAM-SHA-1 分支里同样先算 digest，所以服务端必须
+/// 一致，否则客户端 proof 永远对不上，表现为 "user not found"。
+pub fn scram_sha1_password(username: &str, password: &str) -> String {
+    use crate::digest::hex;
+    hex(Md5::digest(format!("{username}:mongo:{password}").as_bytes()).as_bytes())
+}
+
 /// MONGODB-CR 旧认证：`<md5(md5Hex(username:mongo:db) + ':' + password)>`。
 ///
 /// 返回小写十六进制串（32 字符），即 `authenticationKey` 之外的明文比较值。

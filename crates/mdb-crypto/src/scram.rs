@@ -269,7 +269,11 @@ enum State {
 }
 
 /// SCRAM 服务端会话状态机。
-#[derive(Debug)]
+///
+/// `Clone` 是必需的：`saslStart` 与 `saslContinue` 是两条独立的 wire
+/// 命令，服务端状态机必须跨命令存活；连接状态在两条命令之间会被取回
+/// 一份副本，副本里丢掉会话就等于要求客户端一次性完成认证。
+#[derive(Debug, Clone)]
 pub struct ServerScram {
     mechanism: ScramMechanism,
     state: State,

@@ -4,46 +4,110 @@ import (
 	"context"
 	"fmt"
 
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
+	native "github.com/mdb-official/mdb-native"
 )
 
-// Cursor wraps the official mongo-go-driver cursor with MDB-specific extensions.
+// Cursor 遍历查询结果。
+//
+// 既支持真实游标（find 的 getMore 形态），也支持一次性结果集
+// （aggregate / listIndexes 这类单批返回的命令）。
 type Cursor struct {
-	cur *mongo.Cursor
+	native *native.MdbCursor
+	docs   []Document
+	pos    int
+	err    error
 }
 
-// Next returns true if there is a document available to decode.
+// Next 前进到下一条文档。
 func (c *Cursor) Next(ctx context.Context) bool {
-	return c.cur.Next(ctx)
+	if c.native != nil {
+		return c.native.Next()
+	}
+	if c.pos >= len(c.docs) {
+		return false
+	}
+	c.pos++
+	return true
 }
 
-// Decode decodes the current document into the provided value.
+// Decode 把当前文档写入 val（*Document 或 *map[string]interface{}）。
 func (c *Cursor) Decode(val interface{}) error {
-	return c.cur.Decode(val)
+	if c.native != nil {
+		return c.native.Decode(val)
+	}
+	if c.pos == 0 || c.pos > len(c.docs) {
+		return fmt.Errorf("mdb: no document to decode")
+	}
+	target, ok := val.(*Document)
+	if !ok {
+		return fmt.Errorf("mdb: decode target must be *mdb.Document, got %T", val)
+	}
+	*target = c.docs[c.pos-1]
+	return nil
 }
 
-// All iterates the cursor to completion and decodes all documents into results.
+// All 取出全部文档。
 func (c *Cursor) All(ctx context.Context, results interface{}) error {
-	return c.cur.All(ctx, results)
+	out, ok := results.(*[]Document)
+	if !ok {
+		return fmt.Errorf("mdb: results must be *[]mdb.Document, got %T", results)
+	}
+	for c.Next(ctx) {
+		var doc Document
+		if err := c.Decode(&doc); err != nil {
+			return err
+		}
+		*out = append(*out, doc)
+	}
+	return c.Err()
 }
 
-// Close closes the cursor and releases associated resources.
+// Close 释放游标。
 func (c *Cursor) Close(ctx context.Context) error {
-	return c.cur.Close(ctx)
+	if c.native != nil {
+		return c.native.Close()
+	}
+	return nil
 }
 
-// Err returns the last error encountered by the cursor.
+// Err 返回遍历过程中的错误。
 func (c *Cursor) Err() error {
-	return c.cur.Err()
+	if c.native != nil {
+		// native 的游标错误字段是私有的，只能由 Next() 的结果推断。
+		return nil
+	}
+	return c.err
 }
 
-// Explain returns the query explanation (explain plan) for the cursor's query.
-func (c *Cursor) Explain(ctx context.Context) (bson.M, error) {
-	var result bson.M
-	err := c.cur.Decode(&result)
-	if err != nil {
+// Explain 返回当前文档（用于 explain 结果）。
+func (c *Cursor) Explain(ctx context.Context) (Document, error) {
+	var doc Document
+	if err := c.Decode(&doc); err != nil {
 		return nil, fmt.Errorf("mdb: explain: %w", err)
 	}
-	return result, nil
+	return doc, nil
+}
+
+// staticCursor 包装一次性结果集。
+func staticCursor(docs []Document) *Cursor {
+	return &Cursor{docs: docs}
+}
+
+// docsFromCursorReply 从 `{cursor: {firstBatch: [...]}}` 里取出文档。
+func docsFromCursorReply(resp Document) []Document {
+	cursor, ok := resp["cursor"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	batch, ok := cursor["firstBatch"].([]interface{})
+	if !ok {
+		return nil
+	}
+	docs := make([]Document, 0, len(batch))
+	for _, item := range batch {
+		if m, ok := item.(map[string]interface{}); ok {
+			docs = append(docs, Document(m))
+		}
+	}
+	return docs
 }

@@ -2,6 +2,7 @@ package com.mdb.driver;
 
 import org.bson.Document;
 import org.bson.conversions.Bson;
+import org.bson.types.ObjectId;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -128,7 +129,7 @@ public class MdbDriverTest {
     public void testRunCommand() {
         Document result = database.runCommand(new Document("ping", 1));
         assertNotNull("Command result should not be null", result);
-        assertEquals("Ping should return ok", 1.0, result.getDouble("ok"));
+        assertEquals("Ping should return ok", 1.0, result.getDouble("ok").doubleValue());
     }
 
     @Test
@@ -499,11 +500,12 @@ public class MdbDriverTest {
 
         com.mongodb.client.model.IndexOptions built = options.build();
         assertNotNull("Built options should not be null", built);
-        assertTrue("Should be unique", built.getUnique());
-        assertTrue("Should be sparse", built.getSparse());
-        assertEquals("Expire after seconds should match", Integer.valueOf(3600), built.getExpireAfterSeconds());
+        assertTrue("Should be unique", built.isUnique());
+        assertTrue("Should be sparse", built.isSparse());
+        assertEquals("Expire after seconds should match", Long.valueOf(3600L),
+                built.getExpireAfter(java.util.concurrent.TimeUnit.SECONDS));
         assertEquals("Name should match", "test_index", built.getName());
-        assertTrue("Should be background", built.getBackground());
+        assertTrue("Should be background", built.isBackground());
     }
 
     // ==================== MdbWriteConcern Tests ====================

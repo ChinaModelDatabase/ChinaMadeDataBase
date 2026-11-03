@@ -10,6 +10,8 @@ type ClientOptions struct {
 	MaxPoolSize  uint64
 	MinPoolSize  uint64
 	Timeout      time.Duration
+	// Database 是连接串里带的默认库名（事务/watch 需要它来拼命名空间）。
+	Database string
 }
 
 // ClientOption is a functional option for configuring a Client.
@@ -67,17 +69,17 @@ func applyOptions(opts []ClientOption) *ClientOptions {
 
 // CreateCollectionOptions configures collection creation behavior.
 type CreateCollectionOptions struct {
-	Capped         bool
-	SizeInBytes    int64
-	MaxDocuments   int64
+	Capped          bool
+	SizeInBytes     int64
+	MaxDocuments    int64
 	ValidationLevel string
 }
 
 // FindOptions configures find operations.
 type FindOptions struct {
-	Limit  int64
-	Skip   int64
-	Sort   interface{}
+	Limit      int64
+	Skip       int64
+	Sort       interface{}
 	Projection interface{}
 }
 
@@ -96,13 +98,18 @@ type InsertManyOptions struct {
 }
 
 // UpdateOptions configures update operations.
-type UpdateOptions struct{}
+type UpdateOptions struct {
+	// Upsert 为 true 时：没有匹配文档就按过滤条件插入一条。
+	Upsert bool
+}
 
 // DeleteOptions configures delete operations.
 type DeleteOptions struct{}
 
 // ReplaceOptions configures replace operations.
-type ReplaceOptions struct{}
+type ReplaceOptions struct {
+	Upsert bool
+}
 
 // AggregateOptions configures aggregation pipeline operations.
 type AggregateOptions struct{}

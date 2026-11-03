@@ -14,6 +14,11 @@ const TABLE = new Int32Array(256);
   }
 })();
 
+/** `crc32c` 的对象式别名：测试与上层代码用的是 `CRC32C.calculate(...)`。 */
+export const CRC32C = {
+  calculate: (data: Buffer): number => crc32c(data),
+};
+
 export function crc32c(data: Buffer): number {
   let crc = 0xffffffff;
   for (let i = 0; i < data.length; i++) {

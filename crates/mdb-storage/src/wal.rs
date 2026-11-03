@@ -97,6 +97,12 @@ struct PendingBatch {
 
 struct PendingWrite {
     result: Mutex<Option<MdbResult<()>>>,
+    /// 每个等待者自带一个 Condvar。
+    ///
+    /// Condvar 必须与等待时持有的 Mutex 严格配对：共用全局 Condvar
+    /// 而各自锁不同的 `result` 会让 std 直接 panic（"attempted to use a
+    /// condition variable with two mutexes"）。
+    cvar: Condvar,
 }
 
 struct WalState {
@@ -132,7 +138,6 @@ pub struct WalManager {
 struct WalManagerInner {
     state: Mutex<WalState>,
     group_commit_us: u64,
-    commit_cvar: Condvar,
 }
 
 impl WalManager {
@@ -157,7 +162,6 @@ impl WalManager {
         let inner = Arc::new(WalManagerInner {
             state: Mutex::new(state),
             group_commit_us,
-            commit_cvar: Condvar::new(),
         });
 
         Ok(Self { inner })
@@ -205,6 +209,7 @@ impl WalManager {
 
         let pending_write = Arc::new(PendingWrite {
             result: Mutex::new(None),
+            cvar: Condvar::new(),
         });
 
         let is_leader = {
@@ -255,9 +260,8 @@ impl WalManager {
             .map_err(|e| io_err(format!("lock pending: {e}")))?;
 
         while wait_result.is_none() {
-            wait_result = self
-                .inner
-                .commit_cvar
+            wait_result = pending_write
+                .cvar
                 .wait(wait_result)
                 .map_err(|e| io_err(format!("wait: {e}")))?;
         }
@@ -301,13 +305,14 @@ impl WalManager {
         Ok(())
     }
 
-    fn notify_waiters(inner: &WalManagerInner, batch: &PendingBatch, result: MdbResult<()>) {
+    fn notify_waiters(_inner: &WalManagerInner, batch: &PendingBatch, result: MdbResult<()>) {
         for pw in &batch.senders {
             if let Ok(mut guard) = pw.result.lock() {
                 *guard = Some(result.clone());
+                drop(guard);
+                pw.cvar.notify_all();
             }
         }
-        inner.commit_cvar.notify_all();
     }
 
     pub fn recover<F>(

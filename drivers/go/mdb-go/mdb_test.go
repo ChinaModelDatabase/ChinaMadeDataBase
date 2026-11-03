@@ -4,9 +4,6 @@ import (
 	"context"
 	"testing"
 	"time"
-
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 func TestNewClient(t *testing.T) {
@@ -154,7 +151,7 @@ func TestIntegrationOperations(t *testing.T) {
 	coll := db.Collection("test_collection")
 
 	// Insert one
-	insertResult, err := coll.InsertOne(ctx, bson.M{
+	insertResult, err := coll.InsertOne(ctx, Document{
 		"name":  "test",
 		"count": 1,
 		"time":  time.Now(),
@@ -168,9 +165,9 @@ func TestIntegrationOperations(t *testing.T) {
 
 	// Insert many
 	docs := []interface{}{
-		bson.M{"name": "doc1", "count": 2},
-		bson.M{"name": "doc2", "count": 3},
-		bson.M{"name": "doc3", "count": 4},
+		Document{"name": "doc1", "count": 2},
+		Document{"name": "doc2", "count": 3},
+		Document{"name": "doc3", "count": 4},
 	}
 	insertManyResult, err := coll.InsertMany(ctx, docs)
 	if err != nil {
@@ -181,7 +178,7 @@ func TestIntegrationOperations(t *testing.T) {
 	}
 
 	// Count documents
-	count, err := coll.CountDocuments(ctx, bson.M{})
+	count, err := coll.CountDocuments(ctx, Document{})
 	if err != nil {
 		t.Fatalf("CountDocuments failed: %v", err)
 	}
@@ -190,25 +187,25 @@ func TestIntegrationOperations(t *testing.T) {
 	}
 
 	// Find one
-	result := &bson.M{}
-	sr, err := coll.FindOne(ctx, bson.M{"name": "test"})
+	result := Document{}
+	sr, err := coll.FindOne(ctx, Document{"name": "test"})
 	if err != nil {
 		t.Fatalf("FindOne failed: %v", err)
 	}
-	err = sr.Decode(result)
+	err = sr.Decode(&result)
 	if err != nil {
 		t.Fatalf("Decode failed: %v", err)
 	}
-	if (*result)["name"] != "test" {
-		t.Errorf("expected name 'test', got %v", (*result)["name"])
+	if result["name"] != "test" {
+		t.Errorf("expected name 'test', got %v", result["name"])
 	}
 
 	// Find
-	cursor, err := coll.Find(ctx, bson.M{"count": bson.M{"$gte": 3}})
+	cursor, err := coll.Find(ctx, Document{"count": Document{"$gte": 3}})
 	if err != nil {
 		t.Fatalf("Find failed: %v", err)
 	}
-	var results []bson.M
+	var results []Document
 	err = cursor.All(ctx, &results)
 	if err != nil {
 		t.Fatalf("cursor.All failed: %v", err)
@@ -218,7 +215,7 @@ func TestIntegrationOperations(t *testing.T) {
 	}
 
 	// Update one
-	updateResult, err := coll.UpdateOne(ctx, bson.M{"name": "test"}, bson.M{"$set": bson.M{"count": 10}})
+	updateResult, err := coll.UpdateOne(ctx, Document{"name": "test"}, Document{"$set": Document{"count": 10}})
 	if err != nil {
 		t.Fatalf("UpdateOne failed: %v", err)
 	}
@@ -227,7 +224,7 @@ func TestIntegrationOperations(t *testing.T) {
 	}
 
 	// Update many
-	updateManyResult, err := coll.UpdateMany(ctx, bson.M{"count": bson.M{"$gte": 3}}, bson.M{"$inc": bson.M{"count": 100}})
+	updateManyResult, err := coll.UpdateMany(ctx, Document{"count": Document{"$gte": 3}}, Document{"$inc": Document{"count": 100}})
 	if err != nil {
 		t.Fatalf("UpdateMany failed: %v", err)
 	}
@@ -236,7 +233,7 @@ func TestIntegrationOperations(t *testing.T) {
 	}
 
 	// Replace one
-	replaceResult, err := coll.ReplaceOne(ctx, bson.M{"name": "doc1"}, bson.M{"name": "doc1_replaced", "count": 999})
+	replaceResult, err := coll.ReplaceOne(ctx, Document{"name": "doc1"}, Document{"name": "doc1_replaced", "count": 999})
 	if err != nil {
 		t.Fatalf("ReplaceOne failed: %v", err)
 	}
@@ -245,7 +242,7 @@ func TestIntegrationOperations(t *testing.T) {
 	}
 
 	// Delete one
-	deleteResult, err := coll.DeleteOne(ctx, bson.M{"name": "doc1_replaced"})
+	deleteResult, err := coll.DeleteOne(ctx, Document{"name": "doc1_replaced"})
 	if err != nil {
 		t.Fatalf("DeleteOne failed: %v", err)
 	}
@@ -254,7 +251,7 @@ func TestIntegrationOperations(t *testing.T) {
 	}
 
 	// Distinct
-	distinctResult, err := coll.Distinct(ctx, "name", bson.M{})
+	distinctResult, err := coll.Distinct(ctx, "name", Document{})
 	if err != nil {
 		t.Fatalf("Distinct failed: %v", err)
 	}
@@ -263,14 +260,14 @@ func TestIntegrationOperations(t *testing.T) {
 	}
 
 	// Aggregate
-	aggPipeline := bson.A{
-		bson.M{"$group": bson.M{"_id": "$count", "total": bson.M{"$sum": 1}}},
+	aggPipeline := []interface{}{
+		Document{"$group": Document{"_id": "$count", "total": Document{"$sum": 1}}},
 	}
 	aggCursor, err := coll.Aggregate(ctx, aggPipeline)
 	if err != nil {
 		t.Fatalf("Aggregate failed: %v", err)
 	}
-	var aggResults []bson.M
+	var aggResults []Document
 	err = aggCursor.All(ctx, &aggResults)
 	if err != nil {
 		t.Fatalf("Aggregate All failed: %v", err)
@@ -309,7 +306,7 @@ func TestIntegrationIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListIndexes failed: %v", err)
 	}
-	var indexes []bson.M
+	var indexes []Document
 	err = cursor.All(ctx, &indexes)
 	if err != nil {
 		t.Fatalf("ListIndexes All failed: %v", err)
@@ -418,8 +415,8 @@ func TestIntegrationObjectID(t *testing.T) {
 	coll := db.Collection("oid_collection")
 
 	// Insert with explicit ObjectID
-	oid := primitive.NewObjectID()
-	_, err = coll.InsertOne(ctx, bson.M{
+	oid := ObjectID()
+	_, err = coll.InsertOne(ctx, Document{
 		"_id":  oid,
 		"name": "with_oid",
 	})
@@ -428,17 +425,17 @@ func TestIntegrationObjectID(t *testing.T) {
 	}
 
 	// Find by ObjectID
-	result := &bson.M{}
-	sr, err := coll.FindOne(ctx, bson.M{"_id": oid})
+	result := Document{}
+	sr, err := coll.FindOne(ctx, Document{"_id": oid})
 	if err != nil {
 		t.Fatalf("FindOne by ObjectID failed: %v", err)
 	}
-	err = sr.Decode(result)
+	err = sr.Decode(&result)
 	if err != nil {
 		t.Fatalf("Decode failed: %v", err)
 	}
-	if (*result)["name"] != "with_oid" {
-		t.Errorf("expected name 'with_oid', got %v", (*result)["name"])
+	if result["name"] != "with_oid" {
+		t.Errorf("expected name 'with_oid', got %v", result["name"])
 	}
 }
 
@@ -459,7 +456,7 @@ func TestIntegrationCollectionStats(t *testing.T) {
 
 	// Insert some data
 	for i := 0; i < 10; i++ {
-		_, err := coll.InsertOne(ctx, bson.M{"index": i, "value": primitive.NewObjectID().Hex()})
+		_, err := coll.InsertOne(ctx, Document{"index": i, "value": ObjectID()})
 		if err != nil {
 			t.Fatalf("InsertOne failed: %v", err)
 		}
@@ -497,7 +494,7 @@ func TestIntegrationRunCommand(t *testing.T) {
 	db := client.Database("test")
 
 	// Ping command
-	result, err := db.RunCommand(ctx, bson.M{"ping": 1})
+	result, err := db.RunCommand(ctx, Document{"ping": 1})
 	if err != nil {
 		t.Fatalf("RunCommand ping failed: %v", err)
 	}

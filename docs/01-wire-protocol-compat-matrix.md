@@ -4,7 +4,7 @@
 |---|---|
 | 文档版本 | 0.1.0（草稿） |
 | 对应 MDB 版本 | 0.1.0 |
-| 目标线协议版本 | `maxWireVersion = 21`（MongoDB 7.0） |
+| 目标线协议版本 | `maxWireVersion = 25`（MongoDB 8.0） |
 | 默认端口 | 27017 |
 | `maxBsonObjectSize` | 16777216（16 MiB） |
 | 编写日期 | 2026-09-29 |
@@ -171,7 +171,7 @@ BID 编码把符号放在**最后一个字节**的最高位，而 `[u8; 16]` 的
 | `hello`（`isMaster` 别名） | 是 | 必须支持 | ✅ 识别全部 4 种拼写 |
 | `ismaster` | 是 | 兼容期需支持 | ✅ 布尔，非整数 |
 | `isWritablePrimary` | 是 | 兼容期需支持 | ✅ 布尔 |
-| `maxWireVersion` | 21 | 报 21 | ✅ 编译期常量 + 单测锁定 |
+| `maxWireVersion` | 25 | 报 25 | ✅ 编译期常量 + 单测锁定 |
 | `minWireVersion` | — | 需与 `mdb-doc` 能力自洽 | ✅ 报 0 |
 | `maxBsonObjectSize` | 16777216 | 报 16777216 | ✅ |
 | `maxMessageSizeBytes` | 48000000 | — | ✅ |
@@ -307,7 +307,7 @@ cargo test -p mdb-server --test driver_handshake
 | `helloOk` | `Bool(true)` | `True` ✅ |
 | `topologyVersion` | `Document{processId: ObjectId, counter: Int64}` | `dict` ✅ |
 | `localTime` | `DateTime(ms)` | `datetime.datetime(...)` ✅ |
-| `maxWireVersion` | `Int32(21)` | `21` ✅ |
+| `maxWireVersion` | `Int32(25)` | `25` ✅ |
 | `maxBsonObjectSize` | `Int32(16777216)` | `16777216` ✅ |
 | `maxMessageSizeBytes` | `Int32(48000000)` | `48000000` ✅ |
 | `readOnly` | `Bool(false)` | `False` ✅ |

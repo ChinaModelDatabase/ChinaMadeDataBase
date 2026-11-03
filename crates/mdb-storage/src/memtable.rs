@@ -26,16 +26,18 @@ impl MemTable {
         let lo = make_internal_key(user_key, snapshot_seqno);
         let hi = make_internal_key(user_key, 0);
 
-        for (ik, val) in self.map.range::<Vec<u8>, _>(lo..=hi) {
-            if let Some(sn) = parse_internal_key(ik).map(|(_, sn)| sn) {
-                if ik_user_key_eq(ik, user_key) && sn <= snapshot_seqno {
-                    if val.is_empty() {
-                        return Some(None);
-                    }
-                    return Some(Some(val.clone()));
+        // 只取该 user_key 的最新可见版本：internal key 按 (user_key, seqno 降序)
+        // 排列，命中的第一条即答案，不需要遍历后续条目。
+        let Some((ik, val)) = self.map.range::<Vec<u8>, _>(lo..=hi).next() else {
+            return None;
+        };
+        if let Some(sn) = parse_internal_key(ik).map(|(_, sn)| sn) {
+            if ik_user_key_eq(ik, user_key) && sn <= snapshot_seqno {
+                if val.is_empty() {
+                    return Some(None);
                 }
+                return Some(Some(val.clone()));
             }
-            break;
         }
         None
     }

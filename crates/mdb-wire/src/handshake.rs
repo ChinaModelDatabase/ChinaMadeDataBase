@@ -15,9 +15,9 @@
 //!
 //! # 版本号不是随手写的
 //!
-//! 本模块的 [`MAX_WIRE_VERSION`] 取 **21**，即 **MongoDB 7.0**
+//! 本模块的 [`MAX_WIRE_VERSION`] 取 **25**，即 **MongoDB 8.0**
 //! （依据 MongoDB 官方 wire version / feature list 与 DRIVERS-2595，
-//! 已在 `docs/01` §3 核实）。**不能**凭记忆写成 4.4 或 8.0：
+//! 已在 `docs/01` §3 核实）。**不能**凭记忆写成 4.4 或 7.0：
 //!
 //! - 报低 → 驱动进入兼容模式，功能与性能受限；
 //! - 报高 → 驱动启用我们尚未实现的特性，行为不可预期。
@@ -37,7 +37,7 @@ use mdb_doc::{Bson, Document, ObjectId};
 
 use crate::op_msg::OpMsg;
 
-/// 目标最高线协议版本：MongoDB 7.0。
+/// 目标最高线协议版本：MongoDB 8.0。
 pub const MAX_WIRE_VERSION: i32 = 25;
 
 /// 目标最低线协议版本（MongoDB 2.6 起）。

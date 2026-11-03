@@ -32,11 +32,60 @@ MDB_HOST = os.environ.get("MDB_HOST", "localhost")
 MDB_PORT = int(os.environ.get("MDB_PORT", "27017"))
 MDB_URI = os.environ.get("MDB_URI", f"mongodb://{MDB_HOST}:{MDB_PORT}")
 MDB_DATABASE = os.environ.get("MDB_DATABASE", "test_mdb_driver")
+MDB_USER = os.environ.get("MDB_USER", "mdbtest")
+MDB_PASSWORD = os.environ.get("MDB_PASSWORD", "mdbtest123")
+
+
+def _server_reachable(host: str, port: int, timeout: float = 0.5) -> bool:
+    """先探活再连接。
+
+    `MdbClient` 在端口不可达时会一直阻塞：测试挂死比测试失败难查得多。
+
+    想跑集成测试请先起服务：
+
+    ```text
+    cargo run -p mdb-server --example serve -- 27017
+    ```
+
+    端口不是 27017 时用 `MDB_HOST` / `MDB_PORT` 指定。
+    """
+    import socket
+
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+if not _server_reachable(MDB_HOST, MDB_PORT):
+    pytest.skip(
+        f"MDB server not reachable at {MDB_HOST}:{MDB_PORT}",
+        allow_module_level=True,
+    )
+
+
+def _ensure_admin_user(host: str, port: int, user: str, pwd: str) -> None:
+    """确保存在一个 root 账号，然后整个 suite 都用鉴权连接跑。
+
+    新实例里用户表为空，MDB 与 MongoDB 一样允许回环连接建第一个用户
+    （localhost exception）；账号已存在时 `createUser` 会报错，忽略即可。
+    """
+    probe = MdbClient(host, port)
+    try:
+        probe._client.admin.command(
+            "createUser", user, pwd=pwd, roles=[{"role": "root", "db": "admin"}]
+        )
+    except Exception:  # noqa: BLE001 - 账号已存在，或服务端已要求鉴权
+        pass
+    finally:
+        probe.close()
 
 
 @pytest.fixture(scope="module")
 def client() -> Generator[MdbClient, None, None]:
-    c = MdbClient(MDB_HOST, MDB_PORT)
+    _ensure_admin_user(MDB_HOST, MDB_PORT, MDB_USER, MDB_PASSWORD)
+    c = MdbClient(MDB_HOST, MDB_PORT, username=MDB_USER, password=MDB_PASSWORD)
     yield c
     c.close()
 
@@ -49,10 +98,15 @@ def database(client: MdbClient) -> MdbDatabase:
 @pytest.fixture(autouse=True)
 def cleanup(database: MdbDatabase) -> Generator[None, None, None]:
     yield
-    for coll_info in database.list_collections():
-        coll_name = coll_info["name"]
-        if not coll_name.startswith("system."):
-            database.drop_collection(coll_name)
+    # 清理失败不该把用例判成 ERROR：被测行为与清理无关，而
+    # `list_collections` 一旦报错，连纯单元测试都会被记为失败。
+    try:
+        for coll_info in database.list_collections():
+            coll_name = coll_info["name"]
+            if not coll_name.startswith("system."):
+                database.drop_collection(coll_name)
+    except Exception:  # noqa: BLE001 - 清理阶段异常不掩盖测试结果
+        pass
 
 
 class TestMdbClient:
@@ -90,7 +144,10 @@ class TestMdbClient:
         assert isinstance(txn, MdbTransaction)
 
     def test_from_uri(self) -> None:
-        c = MdbClient.from_uri(f"mongodb://{MDB_HOST}:{MDB_PORT}")
+        # 服务端一旦有账号就要求鉴权，URI 里必须带凭据（否则 ping 会被拒）。
+        c = MdbClient.from_uri(
+            f"mongodb://{MDB_USER}:{MDB_PASSWORD}@{MDB_HOST}:{MDB_PORT}/?authSource=admin"
+        )
         assert c.is_connected()
         c.close()
 
@@ -501,8 +558,10 @@ class TestMdbGridFSBucket:
         files = bucket.find({"_id": file_id})
         assert files[0]["filename"] == "new_name.txt"
 
-    def test_repr(self) -> None:
-        bucket = MdbGridFSBucket(MagicMock(), bucket_name="fs")
+    def test_repr(self, database: MdbDatabase) -> None:
+        # 用真实库：底层 pymongo 的 GridFSBucket 会校验 Database 类型，
+        # mock 进不去。
+        bucket = MdbGridFSBucket(database, bucket_name="fs")
         assert "MdbGridFSBucket" in repr(bucket)
 
 

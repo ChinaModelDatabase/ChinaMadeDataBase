@@ -1,5 +1,9 @@
 import { ObjectId } from './objectid';
 
+// 从 bson 模块直接拿 ObjectId 是合理预期（它就是 BSON 类型之一），
+// 之前只在本文件内部使用、没有导出，导致 `import { ObjectId } from './bson'` 失败。
+export { ObjectId };
+
 // ─── BSON Element Types ────────────────────────────────────────────────────────
 
 export const enum BsonType {
@@ -170,7 +174,11 @@ export class BsonEncoder {
   encode(doc: BsonDocument): Buffer {
     this.pos = 0;
     this.writeDocument(doc);
-    return this.buf.subarray(0, this.pos);
+    // 必须拷贝：内部 buffer 是复用的，返回 subarray 会让上一次 encode
+    // 的结果被下一次 encode 覆盖（两条文档指向同一块内存）。
+    const out = Buffer.allocUnsafe(this.pos);
+    this.buf.copy(out, 0, 0, this.pos);
+    return out;
   }
 
   encodeInto(doc: BsonDocument, target: Buffer, offset = 0): Buffer {
@@ -288,3 +296,9 @@ export class BsonDecoder {
     return this.readDocument();
   }
 }
+
+/** 编码/解码的快捷入口：调用方通常只想要"文档 ↔ Buffer"，不想先 new 编解码器。 */
+export const BSON = {
+  encode: (doc: BsonDocument): Buffer => new BsonEncoder().encode(doc),
+  decode: (buf: Buffer): BsonDocument => new BsonDecoder(buf).decode(),
+};

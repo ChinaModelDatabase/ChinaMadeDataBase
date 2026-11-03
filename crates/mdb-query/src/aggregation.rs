@@ -157,6 +157,8 @@ impl GroupId {
 #[derive(Debug, Clone)]
 pub enum Accumulator {
     Sum(String),
+    /// `{$sum: <number>}`：对每个文档累加常量（`count_documents` 的 `$group` 就靠它）。
+    SumConst(f64),
     Avg(String),
     Min(String),
     Max(String),
@@ -611,6 +613,10 @@ fn compute_accumulator(acc: &Accumulator, docs: &[Document]) -> Bson {
         Accumulator::Sum(field) => {
             let lookup = field.strip_prefix('$').unwrap_or(field);
             let sum: f64 = docs.iter().filter_map(|d| d.get(lookup)).filter_map(Bson::as_f64).sum();
+            if sum.fract() == 0.0 && sum.abs() < i64::MAX as f64 { Bson::Int64(sum as i64) } else { Bson::Double(sum) }
+        }
+        Accumulator::SumConst(v) => {
+            let sum = v * docs.len() as f64;
             if sum.fract() == 0.0 && sum.abs() < i64::MAX as f64 { Bson::Int64(sum as i64) } else { Bson::Double(sum) }
         }
         Accumulator::Avg(field) => {

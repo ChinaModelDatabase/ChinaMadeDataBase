@@ -786,40 +786,21 @@ fn parse_regex(pattern: &str) -> Result<RegexAst, ()> {
 
 fn parse_alt(chars: &[char], pos: usize) -> Result<(RegexAst, usize), ()> {
     let (mut first, mut pos) = parse_concat(chars, pos)?;
+    let single = |mut v: Vec<RegexAst>| -> RegexAst {
+        if v.len() == 1 { v.remove(0) } else { RegexAst::Concat(v) }
+    };
+    if pos >= chars.len() || chars[pos] != '|' {
+        return Ok((single(first), pos));
+    }
+    // 出现 `|` 后把后续所有分支收进同一个 `Alt`。
+    let mut alts = vec![single(first)];
     while pos < chars.len() && chars[pos] == '|' {
         pos += 1;
         let (next, next_pos) = parse_concat(chars, pos)?;
-        let prev = if first.len() == 1 {
-            first.remove(0)
-        } else {
-            RegexAst::Concat(first)
-        };
-        let next_ast = if next.len() == 1 {
-            next.into_iter().next().unwrap()
-        } else {
-            RegexAst::Concat(next)
-        };
-        let mut alts = vec![prev, next_ast];
+        alts.push(single(next));
         pos = next_pos;
-        while pos < chars.len() && chars[pos] == '|' {
-            pos += 1;
-            let (next2, next_pos2) = parse_concat(chars, pos)?;
-            let next_ast2 = if next2.len() == 1 {
-                next2.into_iter().next().unwrap()
-            } else {
-                RegexAst::Concat(next2)
-            };
-            alts.push(next_ast2);
-            pos = next_pos2;
-        }
-        return Ok((RegexAst::Alt(alts), pos));
     }
-    let ast = if first.len() == 1 {
-        first.remove(0)
-    } else {
-        RegexAst::Concat(first)
-    };
-    Ok((ast, pos))
+    Ok((RegexAst::Alt(alts), pos))
 }
 
 fn parse_concat(chars: &[char], pos: usize) -> Result<(Vec<RegexAst>, usize), ()> {

@@ -82,8 +82,8 @@ public class MdbDatabase {
     public void createCollection(String collectionName, Document options) {
         database.createCollection(collectionName, new com.mongodb.client.model.CreateCollectionOptions()
                 .capped(options.getBoolean("capped", false))
-                .sizeInBytes(options.getLong("size", 0L))
-                .maxDocuments(options.getLong("max", 0L)));
+                .sizeInBytes(options.getLong("size"))
+                .maxDocuments(options.getLong("max")));
     }
 
     /**

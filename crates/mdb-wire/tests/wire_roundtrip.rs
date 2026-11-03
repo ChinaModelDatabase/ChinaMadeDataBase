@@ -58,7 +58,6 @@ fn full_handshake_roundtrip() {
     // --- 客户端：解析应答 ---
     let got = OpMsg::parse(&reply_wire).expect("parse reply");
     let rbody = got.body.as_ref().expect("hello reply must have a body");
-    assert_eq!(rbody.get("maxWireVersion"), Some(&Bson::Int32(21)));
     assert_eq!(
         rbody.get("maxWireVersion"),
         Some(&Bson::Int32(MAX_WIRE_VERSION))

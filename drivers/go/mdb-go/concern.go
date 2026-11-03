@@ -10,13 +10,16 @@ type ReadConcern struct {
 	Level string
 }
 
-// Level returns the write concern level string.
-func (wc WriteConcern) Level() string {
+// String 返回写关注的级别字符串。
+//
+// 原来是 `func (wc WriteConcern) Level() string`，与同名字段冲突——
+// Go 里字段和方法不能同名，这个文件根本编译不过。
+func (wc WriteConcern) String() string {
 	return wc.Level
 }
 
-// Level returns the read concern level string.
-func (rc ReadConcern) Level() string {
+// String 返回读关注的级别字符串。
+func (rc ReadConcern) String() string {
 	return rc.Level
 }
 

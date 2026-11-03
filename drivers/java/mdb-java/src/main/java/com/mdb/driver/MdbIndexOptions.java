@@ -96,7 +96,7 @@ public class MdbIndexOptions {
             opts.sparse(true);
         }
         if (expireAfterSeconds >= 0) {
-            opts.expireAfterSeconds(expireAfterSeconds);
+            opts.expireAfter((long) expireAfterSeconds, java.util.concurrent.TimeUnit.SECONDS);
         }
         if (name != null) {
             opts.name(name);

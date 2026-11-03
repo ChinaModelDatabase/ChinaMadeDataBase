@@ -4,128 +4,108 @@ import (
 	"context"
 	"fmt"
 
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	native "github.com/mdb-official/mdb-native"
 )
 
-// Database wraps the official mongo-go-driver database with MDB-specific extensions.
+// Database 是数据库句柄。
 type Database struct {
-	db *mongo.Database
+	db     *native.MdbDatabase
+	client *Client
+	txn    *Transaction
 }
 
-// Collection returns a Collection handle for the given collection name.
+// Collection 返回集合句柄（继承所在事务上下文）。
 func (d *Database) Collection(name string) *Collection {
-	return &Collection{coll: d.db.Collection(name)}
+	return &Collection{coll: d.db.Collection(name), db: d, txn: d.txn}
 }
 
-// ListCollections returns the names of all collections in the database.
+// ListCollections 返回库内所有集合名。
 func (d *Database) ListCollections(ctx context.Context) ([]string, error) {
-	cursor, err := d.db.ListCollections(ctx, bson.M{})
-	if err != nil {
-		return nil, fmt.Errorf("mdb: list collections: %w", err)
-	}
-	defer cursor.Close(ctx)
-
-	var names []string
-	for cursor.Next(ctx) {
-		var result bson.M
-		if err := cursor.Decode(&result); err != nil {
-			return nil, fmt.Errorf("mdb: decode collection name: %w", err)
-		}
-		if name, ok := result["name"].(string); ok {
-			names = append(names, name)
-		}
-	}
-	if err := cursor.Err(); err != nil {
-		return nil, fmt.Errorf("mdb: cursor error: %w", err)
-	}
-	return names, nil
+	return d.db.ListCollections()
 }
 
-// CreateCollection creates a new collection with the given name and options.
+// CreateCollection 创建集合。
 func (d *Database) CreateCollection(ctx context.Context, name string, opts ...*CreateCollectionOptions) error {
-	createOpts := options.CreateCollection()
+	cmd := map[string]interface{}{"create": name}
 	if len(opts) > 0 && opts[0] != nil {
 		o := opts[0]
-		createOpts.SetCapped(o.Capped)
 		if o.Capped {
-			createOpts.SetSizeInBytes(o.SizeInBytes)
-			createOpts.SetMaxDocuments(o.MaxDocuments)
+			cmd["capped"] = true
+			if o.SizeInBytes > 0 {
+				cmd["size"] = o.SizeInBytes
+			}
+			if o.MaxDocuments > 0 {
+				cmd["max"] = o.MaxDocuments
+			}
+		}
+		if o.ValidationLevel != "" {
+			cmd["validationLevel"] = o.ValidationLevel
 		}
 	}
-
-	err := d.db.CreateCollection(ctx, name, createOpts)
+	resp, err := d.db.Command(cmd)
 	if err != nil {
 		return fmt.Errorf("mdb: create collection %q: %w", name, err)
 	}
-	return nil
+	return commandErr(resp)
 }
 
-// DropCollection drops the collection with the given name.
+// DropCollection 删除集合。
 func (d *Database) DropCollection(ctx context.Context, name string) error {
-	err := d.db.Collection(name).Drop(ctx)
-	if err != nil {
+	if err := d.db.DropCollection(name); err != nil {
 		return fmt.Errorf("mdb: drop collection %q: %w", name, err)
 	}
 	return nil
 }
 
-// RunCommand executes a database command and returns the result.
-func (d *Database) RunCommand(ctx context.Context, cmd bson.M) (bson.M, error) {
-	var result bson.M
-	err := d.db.RunCommand(ctx, cmd).Decode(&result)
+// RunCommand 执行任意数据库命令。
+func (d *Database) RunCommand(ctx context.Context, cmd interface{}) (Document, error) {
+	doc, err := toDocument(cmd)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := d.db.Command(doc)
 	if err != nil {
 		return nil, fmt.Errorf("mdb: run command: %w", err)
 	}
-	return result, nil
-}
-
-// Stats returns statistics about the database.
-func (d *Database) Stats(ctx context.Context) (bson.M, error) {
-	var result bson.M
-	err := d.db.RunCommand(ctx, bson.D{{Key: "dbStats", Value: 1}}).Decode(&result)
-	if err != nil {
-		return nil, fmt.Errorf("mdb: database stats: %w", err)
+	if err := commandErr(resp); err != nil {
+		return resp, err
 	}
-	return result, nil
+	return resp, nil
 }
 
-// Role represents a database user role.
+// Stats 返回 dbStats 结果。
+func (d *Database) Stats(ctx context.Context) (Document, error) {
+	return d.db.Stats()
+}
+
+// Role 是用户角色。
 type Role struct {
 	Role string
 	DB   string
 }
 
-// CreateUser creates a new database user with the given credentials and roles.
+// CreateUser 创建用户。
 func (d *Database) CreateUser(ctx context.Context, username, password string, roles []Role) error {
-	bsonRoles := make([]bson.M, len(roles))
+	bsonRoles := make([]interface{}, len(roles))
 	for i, r := range roles {
-		bsonRoles[i] = bson.M{"role": r.Role, "db": r.DB}
+		bsonRoles[i] = map[string]interface{}{"role": r.Role, "db": r.DB}
 	}
-
-	cmd := bson.D{
-		{Key: "createUser", Value: username},
-		{Key: "pwd", Value: password},
-		{Key: "roles", Value: bsonRoles},
-	}
-
-	err := d.db.RunCommand(ctx, cmd).Err()
+	resp, err := d.db.Command(map[string]interface{}{
+		"createUser": username,
+		"pwd":        password,
+		"roles":      bsonRoles,
+	})
 	if err != nil {
 		return fmt.Errorf("mdb: create user %q: %w", username, err)
 	}
-	return nil
+	return commandErr(resp)
 }
 
-// DropUser removes a database user.
+// DropUser 删除用户。
 func (d *Database) DropUser(ctx context.Context, username string) error {
-	cmd := bson.D{
-		{Key: "dropUser", Value: username},
-	}
-
-	err := d.db.RunCommand(ctx, cmd).Err()
+	resp, err := d.db.Command(map[string]interface{}{"dropUser": username})
 	if err != nil {
 		return fmt.Errorf("mdb: drop user %q: %w", username, err)
 	}
-	return nil
+	return commandErr(resp)
 }

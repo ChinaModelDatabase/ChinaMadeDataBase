@@ -3,85 +3,125 @@ package mdb
 import (
 	"context"
 	"fmt"
-
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	"sync/atomic"
 )
 
-// Transaction represents a multi-document transaction.
-type Transaction struct {
-	session mongo.Session
-	ctx     context.Context
-	opts    TransactionOptions
+// Session 是客户端会话：负责生成 lsid 与事务序号。
+type Session struct {
+	client *Client
+	id     []byte
+	txnSeq int64
 }
 
-// StartTransaction starts a new multi-document transaction.
+// ID 返回会话的 lsid 文档（wire 层要求 `lsid: {id: Binary}`）。
+func (s *Session) ID() Document {
+	return Document{
+		"id": binarySubtype4(s.id),
+	}
+}
+
+// EndSession 结束会话（当前实现为无操作占位）。
+func (s *Session) EndSession(ctx context.Context) {}
+
+// Transaction 是一次多文档事务。
+//
+// 服务端按 `lsid` 记录事务：事务里的写命令要带 `startTransaction`
+// （仅第一条）、`txnNumber` 与 `autocommit: false`，提交/回滚再发
+// 对应的命令。少了任何一项，commit 都会报"没有活跃事务"。
+type Transaction struct {
+	client     *Client
+	session    *Session
+	txnNumber  int64
+	started    bool
+	txnCounter int64
+}
+
+// StartTransaction 开启事务。
 func (c *Client) StartTransaction(opts ...TransactionOptions) (*Transaction, error) {
-	session, err := c.client.StartSession()
+	session, err := c.StartSession()
 	if err != nil {
-		return nil, fmt.Errorf("mdb: start transaction session: %w", err)
+		return nil, err
 	}
-
-	var tOpts TransactionOptions
-	if len(opts) > 0 {
-		tOpts = opts[0]
-	}
-
 	return &Transaction{
-		session: session,
-		ctx:     mongo.NewSessionContext(context.Background(), session),
-		opts:    tOpts,
+		client:    c,
+		session:   session,
+		txnNumber: atomic.AddInt64(&session.txnSeq, 1),
 	}, nil
 }
 
-// Commit commits the transaction.
-func (t *Transaction) Commit() error {
-	err := t.session.CommitTransaction(t.ctx)
-	if err != nil {
-		return fmt.Errorf("mdb: commit transaction: %w", err)
-	}
-	t.session.EndSession(t.ctx)
-	return nil
-}
-
-// Abort aborts the transaction.
-func (t *Transaction) Abort() error {
-	err := t.session.AbortTransaction(t.ctx)
-	if err != nil {
-		return fmt.Errorf("mdb: abort transaction: %w", err)
-	}
-	t.session.EndSession(t.ctx)
-	return nil
-}
-
-// Database returns a Database handle within the transaction context.
+// Database 返回事务内的数据库句柄。
 func (t *Transaction) Database(name string) *Database {
-	return &Database{db: mongo.ClientFromSession(t.session).Database(name)}
+	return &Database{db: t.client.native.Database(name), client: t.client, txn: t}
 }
 
-// Collection returns a Collection handle within the transaction context.
+// Collection 返回事务内的集合句柄：它的写操作会被缓冲，直到 Commit。
 func (t *Transaction) Collection(name string) *Collection {
-	dbName := ""
-	if t.opts.ReadConcern != nil {
-		dbName = "admin"
+	return t.Database(t.client.opts.Database).Collection(name)
+}
+
+// Commit 提交事务。
+func (t *Transaction) Commit() error {
+	resp, err := t.command("commitTransaction")
+	if err != nil {
+		return err
 	}
-	return &Collection{
-		coll: mongo.ClientFromSession(t.session).Database(dbName).Collection(name),
+	t.started = false
+	return commandErr(resp)
+}
+
+// Abort 回滚事务（丢弃缓冲的写操作）。
+func (t *Transaction) Abort() error {
+	resp, err := t.command("abortTransaction")
+	if err != nil {
+		return err
+	}
+	t.started = false
+	return commandErr(resp)
+}
+
+func (t *Transaction) command(name string) (Document, error) {
+	db := t.client.opts.Database
+	if db == "" {
+		db = "admin"
+	}
+	resp, err := t.client.native.Database(db).Command(Document{
+		name:         1,
+		"lsid":       t.session.ID(),
+		"txnNumber":  t.txnNumber,
+		"autocommit": false,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("mdb: %s: %w", name, err)
+	}
+	return resp, nil
+}
+
+// apply 把会话字段写进命令：事务里的第一条写命令额外带 startTransaction。
+func (t *Transaction) apply(cmd map[string]interface{}) {
+	cmd["lsid"] = t.session.ID()
+	cmd["txnNumber"] = t.txnNumber
+	cmd["autocommit"] = false
+	if !t.started {
+		cmd["startTransaction"] = true
+		t.started = true
 	}
 }
 
-// WithTransaction is a convenience method that starts a transaction,
-// executes the provided function, and commits or aborts automatically.
-func (c *Client) WithTransaction(ctx context.Context, fn func(sessCtx mongo.SessionContext) (interface{}, error)) (interface{}, error) {
-	session, err := c.client.StartSession()
+// WithTransaction 起事务、执行 fn，出错自动回滚，否则提交。
+func (c *Client) WithTransaction(ctx context.Context, fn func(*Transaction) (interface{}, error)) (interface{}, error) {
+	txn, err := c.StartTransaction()
 	if err != nil {
-		return nil, fmt.Errorf("mdb: start session for with transaction: %w", err)
+		return nil, err
 	}
-	defer session.EndSession(ctx)
-
-	result, err := session.WithTransaction(ctx, fn, options.Transaction().SetReadConcern(options.ReadConcernLocal))
+	result, err := fn(txn)
 	if err != nil {
-		return nil, fmt.Errorf("mdb: with transaction: %w", err)
+		if abortErr := txn.Abort(); abortErr != nil {
+			return nil, fmt.Errorf("mdb: transaction failed (%v) and abort failed: %w", err, abortErr)
+		}
+		return nil, err
+	}
+	if err := txn.Commit(); err != nil {
+		return nil, err
 	}
 	return result, nil
 }

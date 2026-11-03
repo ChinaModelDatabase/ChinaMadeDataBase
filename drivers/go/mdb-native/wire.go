@@ -38,8 +38,8 @@ func BuildRequest(reqId int32, body map[string]interface{}, docs []map[string]in
 		return nil, fmt.Errorf("wire: encode body: %w", err)
 	}
 
-	// Compute total message length
-	totalSize := HeaderSize + 4 + 4 + len(bodyBytes) // header + flagBits + bodySection(0x00 + body)
+	// header + flagBits + kind byte + body
+	totalSize := HeaderSize + 4 + 1 + len(bodyBytes)
 
 	var docSeqBytes []byte
 	if len(docs) > 0 && seqName != "" {

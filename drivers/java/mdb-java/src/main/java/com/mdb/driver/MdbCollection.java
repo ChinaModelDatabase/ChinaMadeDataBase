@@ -278,10 +278,12 @@ public class MdbCollection {
      * @param key the field name
      * @return a list of distinct values
      */
+    @SuppressWarnings("unchecked")
     public <T> List<T> distinct(String key) {
+        // 驱动的 distinct 必须带结果类型（Class<TResult>），否则无法推断 TResult。
         return session != null
-                ? collection.distinct(session, key).into(new ArrayList<>())
-                : collection.distinct(key).into(new ArrayList<>());
+                ? (List<T>) collection.distinct(session, key, Document.class).into(new ArrayList<Document>())
+                : (List<T>) collection.distinct(key, Document.class).into(new ArrayList<Document>());
     }
 
     /**
@@ -291,10 +293,11 @@ public class MdbCollection {
      * @param filter the query filter
      * @return a list of distinct values
      */
+    @SuppressWarnings("unchecked")
     public <T> List<T> distinct(String key, Bson filter) {
         return session != null
-                ? collection.distinct(session, key, filter).into(new ArrayList<>())
-                : collection.distinct(key, filter).into(new ArrayList<>());
+                ? (List<T>) collection.distinct(session, key, filter, Document.class).into(new ArrayList<Document>())
+                : (List<T>) collection.distinct(key, filter, Document.class).into(new ArrayList<Document>());
     }
 
     // ==================== Count ====================

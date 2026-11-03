@@ -13,6 +13,10 @@ export const SECTION_DOCUMENT_SEQUENCE = 1;
 export const CHECKSUM_PRESENT = 1 << 0;
 export const MORE_TO_COME = 1 << 1;
 
+// 兼容别名：驱动对外文档与测试用的是 `FLAG_*` 前缀。
+export const FLAG_CHECKSUM = CHECKSUM_PRESENT;
+export const FLAG_MORE_TO_COME = MORE_TO_COME;
+
 // ─── Flags (bitmask) ──────────────────────────────────────────────────────────
 
 export interface OpMsgFlags {
@@ -63,7 +67,7 @@ export function buildOpMsg(msg: OpMsgMessage): Buffer {
   for (const section of msg.sections) {
     if (section.kind === 0) {
       const encoded = encoder.encode(section.document);
-      payloadSize += 1 + 4 + encoded.length; // kind(u8) + size(i32) + doc
+      payloadSize += 1 + encoded.length; // kind(u8) + doc（自带长度前缀）
     } else {
       const docsBuf = encodeDocSequence(section.identifier, section.documents);
       payloadSize += docsBuf.length;
@@ -93,8 +97,9 @@ export function buildOpMsg(msg: OpMsgMessage): Buffer {
   for (const section of msg.sections) {
     if (section.kind === 0) {
       const encoded = encoder.encode(section.document);
+      // OP_MSG 的 body 段就是 kind(0) + 文档本身（文档自带 4 字节长度前缀），
+      // 中间**没有**额外的 size 字段——多写一个就会和自己的解析器错位。
       buf[off++] = 0; // kind = 0
-      buf.writeInt32LE(encoded.length, off); off += 4;
       encoded.copy(buf, off); off += encoded.length;
     } else {
       const docsBuf = encodeDocSequence(section.identifier, section.documents);
@@ -115,9 +120,12 @@ export function buildOpMsg(msg: OpMsgMessage): Buffer {
 
 function encodeDocSequence(identifier: string, documents: BsonDocument[]): Buffer {
   const idBytes = Buffer.from(identifier, 'utf8');
-  // kind(1) + size(4) + idLen(4) + idBytes + NUL + docs
+  // kind(1) + size(4) + idBytes(NUL 结尾的 cstring) + docs
+  //
+  // 注意标识符是 **cstring**，没有额外的长度字段：多写一个 i32 就会和
+  // 标准实现（含 MDB 服务端）错开 4 字节。
   const innerParts: Buffer[] = [];
-  let innerSize = 4 + idBytes.length + 1; // size includes itself + idCString
+  let innerSize = 4 + idBytes.length + 1; // size 字段自身 + cstring
 
   for (const doc of documents) {
     const d = encoder.encode(doc);
@@ -130,7 +138,6 @@ function encodeDocSequence(identifier: string, documents: BsonDocument[]): Buffe
   let off = 0;
   buf[off++] = 1; // kind = document sequence
   buf.writeInt32LE(innerSize, off); off += 4;
-  buf.writeInt32LE(idBytes.length + 1, off); off += 4;
   idBytes.copy(buf, off); off += idBytes.length;
   buf[off++] = 0x00; // NUL terminator for identifier
   for (const part of innerParts) {
@@ -144,11 +151,16 @@ function encodeDocSequence(identifier: string, documents: BsonDocument[]): Buffe
 
 export function parseOpMsg(buf: Buffer): OpMsgMessage {
   if (buf.length < HEADER_SIZE) {
-    throw new Error(`Buffer too small for header: ${buf.length}`);
+    throw new Error(`Message too short for header: ${buf.length}`);
   }
 
   let off = 0;
   const msgLen = buf.readInt32LE(off); off += 4;
+  // 声明长度与实际长度不一致说明分帧错位，继续解析只会读到垃圾；
+  // 必须在这里拦下（服务端对同一问题也这么做）。
+  if (msgLen !== buf.length) {
+    throw new Error(`Message length mismatch: header says ${msgLen}, buffer has ${buf.length}`);
+  }
   const requestID = buf.readInt32LE(off); off += 4;
   const responseTo = buf.readInt32LE(off); off += 4;
   const opCode = buf.readInt32LE(off); off += 4;
@@ -178,9 +190,13 @@ export function parseOpMsg(buf: Buffer): OpMsgMessage {
     } else if (kind === 1) {
       const seqSize = buf.readInt32LE(off); off += 4;
       const seqEnd = off + seqSize - 4;
-      const idLen = buf.readInt32LE(off); off += 4;
-      const identifier = buf.toString('utf8', off, off + idLen - 1);
-      off += idLen;
+      // 标识符是 NUL 结尾的 cstring，没有长度前缀字段。
+      let idEnd = off;
+      while (idEnd < seqEnd && buf[idEnd] !== 0x00) {
+        idEnd++;
+      }
+      const identifier = buf.toString('utf8', off, idEnd);
+      off = idEnd + 1;
       const docs: BsonDocument[] = [];
       while (off < seqEnd) {
         const docSize = buf.readInt32LE(off);
@@ -234,3 +250,54 @@ export function buildOpMsgSingle(doc: BsonDocument, requestId?: number): OpMsgMe
     sections: [{ kind: 0, document: doc }],
   };
 }
+
+// ─── 面向使用者的门面 ──────────────────────────────────────────────────────────
+//
+// 底层 `buildOpMsg` / `parseOpMsg` 用的是"消息对象"，而调用方（含测试）真正
+// 想要的是"给我一个 Buffer / 帮我解出 body"，所以这里补一层薄封装。
+
+export const WireProtocol = {
+  /** 组装一条 OP_MSG 请求；`documents` 非空时追加 document sequence 段。 */
+  buildRequest(
+    requestId: number,
+    body: BsonDocument,
+    documents?: BsonDocument[],
+    identifier = 'documents',
+  ): Buffer {
+    const sections: Section[] = [{ kind: 0, document: body }];
+    if (documents && documents.length > 0) {
+      sections.push({ kind: 1, identifier, documents });
+    }
+    return buildOpMsg({
+      requestID: requestId,
+      responseTo: 0,
+      flags: { checksumPresent: false, moreToCome: false, exhaustAllowed: false },
+      sections,
+    });
+  },
+
+  /** 解析应答，直接给出 requestId / responseTo / moreToCome / body。 */
+  parseResponse(buf: Buffer): {
+    requestId: number;
+    responseTo: number;
+    moreToCome: boolean;
+    body: BsonDocument;
+    sections: Section[];
+  } {
+    const msg = parseOpMsg(buf);
+    const bodySection = msg.sections.find(
+      (section): section is BodySection => section.kind === 0,
+    );
+    return {
+      requestId: msg.requestID,
+      responseTo: msg.responseTo,
+      moreToCome: msg.flags.moreToCome,
+      body: bodySection ? bodySection.document : {},
+      sections: msg.sections,
+    };
+  },
+
+  generateRequestId(): number {
+    return nextReqId();
+  },
+};

@@ -135,6 +135,8 @@ name = "mdb-cli"
 version = "0.1.0"
 dependencies = [
  "mdb-common",
+ "mdb-doc",
+ "mdb-wire",
 ]
 
 [[package]]

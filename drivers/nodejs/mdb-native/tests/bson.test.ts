@@ -1,4 +1,4 @@
-import { BsonEncoder, BsonDecoder } from '../src/bson';
+import { BsonEncoder, BsonDecoder, Int64 } from '../src/bson';
 import { ObjectId } from '../src/objectid';
 
 describe('BSON', () => {
@@ -74,7 +74,7 @@ describe('BSON', () => {
       const decoder = new BsonDecoder(buf);
       const doc = decoder.decode();
       expect(doc._id).toBeInstanceOf(ObjectId);
-      expect(doc._id.equals(id)).toBe(true);
+      expect((doc._id as ObjectId).equals(id)).toBe(true);
     });
 
     it('should encode Date', () => {
@@ -84,7 +84,7 @@ describe('BSON', () => {
       const decoder = new BsonDecoder(buf);
       const doc = decoder.decode();
       expect(doc.created).toBeInstanceOf(Date);
-      expect(doc.created.getTime()).toBe(date.getTime());
+      expect((doc.created as Date).getTime()).toBe(date.getTime());
     });
 
     it('should encode nested document', () => {
@@ -147,12 +147,13 @@ describe('BSON', () => {
       expect(doc.min).toBe(-2147483648);
     });
 
-    it('should encode bigint as int64', () => {
+    it('should encode int64', () => {
       const encoder = new BsonEncoder();
-      const buf = encoder.encode({ big: BigInt(9007199254740993) });
+      const buf = encoder.encode({ big: new Int64(BigInt(9007199254740993)) });
       const decoder = new BsonDecoder(buf);
       const doc = decoder.decode();
-      expect(doc.big).toBe(BigInt(9007199254740993));
+      expect(doc.big).toBeInstanceOf(Int64);
+      expect((doc.big as Int64).value).toBe(BigInt(9007199254740993));
     });
   });
 
@@ -177,11 +178,9 @@ describe('BSON', () => {
       const buf1 = encoder.encode({ a: 1 });
       const buf2 = encoder.encode({ b: 2 });
 
-      const decoder = new BsonDecoder(buf1);
-      expect(decoder.decode()).toEqual({ a: 1 });
-
-      decoder.decode(buf2);
-      expect(decoder.decode()).toEqual({ b: 2 });
+      // 解码器绑定构造时传入的 buffer，第二个文档要用新的解码器。
+      expect(new BsonDecoder(buf1).decode()).toEqual({ a: 1 });
+      expect(new BsonDecoder(buf2).decode()).toEqual({ b: 2 });
     });
   });
 

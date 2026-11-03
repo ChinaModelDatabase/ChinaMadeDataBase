@@ -64,14 +64,24 @@ impl Drop for TestServer {
     }
 }
 
+/// 找到能 `import pymongo` 的解释器（优先 `python`，回退 `python3`）。
+fn python_with_pymongo() -> Option<String> {
+    ["python", "python3"]
+        .iter()
+        .find(|bin| {
+            Command::new(bin)
+                .args(["-c", "import pymongo"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        })
+        .map(|s| s.to_string())
+}
+
 fn pymongo_available() -> bool {
-    Command::new("python")
-        .args(["-c", "import pymongo"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    python_with_pymongo().is_some()
 }
 
 #[test]
@@ -115,8 +125,8 @@ else:
     if not isinstance(tv.get("counter"), int):
         problems.append("topologyVersion.counter is %r, want int" % type(tv.get("counter")).__name__)
 
-if h.get("maxWireVersion") != 21:
-    problems.append("maxWireVersion=%r, want 21" % h.get("maxWireVersion"))
+if h.get("maxWireVersion") != __MAX_WIRE_VERSION__:
+    problems.append("maxWireVersion=%r, want __MAX_WIRE_VERSION__" % h.get("maxWireVersion"))
 if h.get("minWireVersion") != 0:
     problems.append("minWireVersion=%r, want 0" % h.get("minWireVersion"))
 if h.get("ismaster") is not True:
@@ -153,8 +163,14 @@ if problems:
 print("DRIVER_OK")
 "#;
 
-    let out = Command::new("python")
-        .args(["-c", script, &server.host(), &server.port().to_string()])
+    let script = script.replace(
+        "__MAX_WIRE_VERSION__",
+        &mdb_wire::MAX_WIRE_VERSION.to_string(),
+    );
+    // 调用方已确认 pymongo 可用，这里必然拿到解释器。
+    let python = python_with_pymongo().expect("pymongo interpreter");
+    let out = Command::new(python)
+        .args(["-c", &script, &server.host(), &server.port().to_string()])
         .output()
         .expect("spawn python");
 
@@ -199,7 +215,10 @@ fn raw_socket_hello_roundtrip() {
     let msg = OpMsg::parse(&raw).expect("parse reply");
     let body = msg.body.expect("body");
     assert_eq!(body.get("ok"), Some(&mdb_doc::Bson::Double(1.0)));
-    assert_eq!(body.get("maxWireVersion"), Some(&mdb_doc::Bson::Int32(21)));
+    assert_eq!(
+        body.get("maxWireVersion"),
+        Some(&mdb_doc::Bson::Int32(mdb_wire::MAX_WIRE_VERSION))
+    );
     match body.get("topologyVersion") {
         Some(mdb_doc::Bson::Document(d)) => {
             assert!(matches!(d.get("processId"), Some(mdb_doc::Bson::ObjectId(_))));

@@ -1,102 +1,154 @@
 package mdb
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
 
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.mongodb.org/mongo-driver/mongo/gridfs"
+	native "github.com/mdb-official/mdb-native"
 )
 
-// GridFSBucket wraps the official mongo-go-driver GridFS bucket with MDB-specific extensions.
+// GridFSBucket 提供 GridFS 文件操作。
 type GridFSBucket struct {
-	bucket *gridfs.Bucket
+	bucket *native.GridFSBucket
+	db     *Database
 }
 
-// GridFSFile represents metadata about a file stored in GridFS.
+// GridFSFile 是一个 GridFS 文件的元信息。
 type GridFSFile struct {
-	ID           primitive.ObjectID `bson:"_id"`
-	Length       int64              `bson:"length"`
-	ChunkSize    int32              `bson:"chunkSize"`
-	UploadDate   primitive.DateTime `bson:"uploadDate"`
-	Filename     string             `bson:"filename"`
-	Metadata     bson.M             `bson:"metadata,omitempty"`
+	ID         string
+	Length     int64
+	ChunkSize  int32
+	UploadDate int64
+	Filename   string
+	Metadata   Document
 }
 
-// UploadFromBytes uploads a byte slice to GridFS and returns the file ID.
-func (b *GridFSBucket) UploadFromBytes(filename string, data []byte) (primitive.ObjectID, error) {
-	reader := bytes.NewReader(data)
-	return b.UploadFromStream(filename, reader)
-}
-
-// UploadFromStream uploads data from an io.Reader to GridFS and returns the file ID.
-func (b *GridFSBucket) UploadFromStream(filename string, reader io.Reader) (primitive.ObjectID, error) {
-	fileID, err := b.bucket.UploadFromStream(filename, reader)
-	if err != nil {
-		return primitive.NilObjectID, fmt.Errorf("mdb: gridfs upload: %w", err)
+// GridFSBucket 返回该库上的 GridFS bucket。
+func (d *Database) GridFSBucket(opts ...*GridFSBucketOptions) *GridFSBucket {
+	name := "fs"
+	if len(opts) > 0 && opts[0] != nil && opts[0].Name != "" {
+		name = opts[0].Name
 	}
-	return fileID, nil
+	return &GridFSBucket{bucket: native.NewGridFSBucket(d.db, name), db: d}
 }
 
-// DownloadToBytes downloads a file from GridFS into a byte slice.
-func (b *GridFSBucket) DownloadToBytes(fileID primitive.ObjectID) ([]byte, error) {
-	var buf bytes.Buffer
-	_, err := b.bucket.DownloadToStream(fileID, &buf)
+// UploadFromBytes 上传字节切片。
+func (b *GridFSBucket) UploadFromBytes(filename string, data []byte) (string, error) {
+	id, err := b.bucket.Upload(filename, data)
+	if err != nil {
+		return "", fmt.Errorf("mdb: gridfs upload: %w", err)
+	}
+	return id, nil
+}
+
+// UploadFromStream 上传 io.Reader 的全部内容。
+func (b *GridFSBucket) UploadFromStream(filename string, reader io.Reader) (string, error) {
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return "", fmt.Errorf("mdb: gridfs read: %w", err)
+	}
+	return b.UploadFromBytes(filename, data)
+}
+
+// DownloadToBytes 下载为字节切片。
+func (b *GridFSBucket) DownloadToBytes(fileID string) ([]byte, error) {
+	data, err := b.bucket.Download(fileID)
 	if err != nil {
 		return nil, fmt.Errorf("mdb: gridfs download: %w", err)
 	}
-	return buf.Bytes(), nil
+	return data, nil
 }
 
-// DownloadToStream downloads a file from GridFS to an io.Writer.
-func (b *GridFSBucket) DownloadToStream(fileID primitive.ObjectID, writer io.Writer) error {
-	_, err := b.bucket.DownloadToStream(fileID, writer)
+// DownloadToStream 下载到 io.Writer。
+func (b *GridFSBucket) DownloadToStream(fileID string, writer io.Writer) error {
+	data, err := b.DownloadToBytes(fileID)
 	if err != nil {
-		return fmt.Errorf("mdb: gridfs download stream: %w", err)
+		return err
+	}
+	if _, err := writer.Write(data); err != nil {
+		return fmt.Errorf("mdb: gridfs write: %w", err)
 	}
 	return nil
 }
 
-// Find searches for files matching the given filter.
-func (b *GridFSBucket) Find(filter interface{}) ([]GridFSFile, error) {
-	ctx := context.Background()
-	cursor, err := b.bucket.Find(filter)
+// Find 查询文件元信息。
+func (b *GridFSBucket) Find(ctx context.Context, filter interface{}) ([]GridFSFile, error) {
+	files, err := b.bucket.ListFiles()
 	if err != nil {
 		return nil, fmt.Errorf("mdb: gridfs find: %w", err)
 	}
-	defer cursor.Close(ctx)
-
-	var files []GridFSFile
-	for cursor.Next(ctx) {
-		var file GridFSFile
-		if err := cursor.Decode(&file); err != nil {
-			return nil, fmt.Errorf("mdb: gridfs decode file: %w", err)
+	f, err := toDocument(filter)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]GridFSFile, 0, len(files))
+	for _, raw := range files {
+		file := gridfsFileFromDocument(raw)
+		if matchesDocument(raw, f) {
+			out = append(out, file)
 		}
-		files = append(files, file)
 	}
-	if err := cursor.Err(); err != nil {
-		return nil, fmt.Errorf("mdb: gridfs cursor: %w", err)
-	}
-	return files, nil
+	return out, nil
 }
 
-// Delete deletes a file from GridFS by its ID.
-func (b *GridFSBucket) Delete(fileID primitive.ObjectID) error {
-	err := b.bucket.Delete(fileID)
-	if err != nil {
+// Delete 删除文件。
+func (b *GridFSBucket) Delete(fileID string) error {
+	if err := b.bucket.Delete(fileID); err != nil {
 		return fmt.Errorf("mdb: gridfs delete: %w", err)
 	}
 	return nil
 }
 
-// Rename renames a file in GridFS.
-func (b *GridFSBucket) Rename(fileID primitive.ObjectID, newFilename string) error {
-	err := b.bucket.Rename(fileID, newFilename)
+// Rename 重命名文件。
+func (b *GridFSBucket) Rename(fileID string, newFilename string) error {
+	resp, err := b.db.db.Command(map[string]interface{}{
+		"findAndModify": b.bucketName() + ".files",
+		"query":         map[string]interface{}{"_id": fileID},
+		"update":        map[string]interface{}{"$set": map[string]interface{}{"filename": newFilename}},
+	})
 	if err != nil {
 		return fmt.Errorf("mdb: gridfs rename: %w", err)
 	}
-	return nil
+	return commandErr(resp)
+}
+
+// bucketName 返回 bucket 使用的集合前缀。
+func (b *GridFSBucket) bucketName() string {
+	return "fs"
+}
+
+func gridfsFileFromDocument(doc Document) GridFSFile {
+	file := GridFSFile{}
+	if id, ok := doc["_id"].(string); ok {
+		file.ID = id
+	} else {
+		file.ID = fmt.Sprintf("%v", doc["_id"])
+	}
+	if name, ok := doc["filename"].(string); ok {
+		file.Filename = name
+	}
+	if n, ok := doc["length"].(float64); ok {
+		file.Length = int64(n)
+	}
+	if n, ok := doc["chunkSize"].(float64); ok {
+		file.ChunkSize = int32(n)
+	}
+	if n, ok := doc["uploadDate"].(float64); ok {
+		file.UploadDate = int64(n)
+	}
+	if m, ok := doc["metadata"].(map[string]interface{}); ok {
+		file.Metadata = Document(m)
+	}
+	return file
+}
+
+// matchesDocument 做最朴素的等值过滤（GridFS find 的常用场景）。
+func matchesDocument(doc, filter Document) bool {
+	for k, v := range filter {
+		if fmt.Sprintf("%v", doc[k]) != fmt.Sprintf("%v", v) {
+			return false
+		}
+	}
+	return true
 }

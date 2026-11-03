@@ -293,7 +293,7 @@ impl Clone for ConnectionState {
             authenticated_user: self.authenticated_user.clone(),
             database: self.database.clone(),
             last_used: self.last_used,
-            scram_session: None,
+            scram_session: self.scram_session.clone(),
             peer_addr: self.peer_addr,
         }
     }
@@ -311,7 +311,7 @@ impl Default for ConnectionState {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ScramSession {
     server_scram: ServerScram,
     database: String,
@@ -1082,18 +1082,101 @@ impl ServerState {
             username: username.to_owned(),
             database: database.to_owned(),
             credential,
-            roles,
+            roles: roles.clone(),
         });
+        self.persist_system_user(username, database, password, &roles)?;
         Ok(())
+    }
+
+    /// 把用户写进 `admin.system.users`。
+    ///
+    /// `saslStart` 按 MongoDB 的习惯从这张集合里读凭证，因此 `createUser`
+    /// 必须同步写到这里——否则用户进了内存表却永远登录不上。
+    /// 两种机制各存一份：驱动会按 `hello` 声明选择 SCRAM-SHA-256 或
+    /// SCRAM-SHA-1，缺哪一种都会导致该机制认证失败。
+    fn persist_system_user(&self, username: &str, database: &str, password: &str, roles: &[Role]) -> MdbResult<()> {
+        let mut credentials = Document::new();
+        for mechanism in [ScramMechanism::Sha256, ScramMechanism::Sha1] {
+            // SCRAM-SHA-1 的口令输入是 `md5Hex(user:mongo:password)`，
+            // 与 MongoDB/官方驱动保持一致；SHA-256 直接用口令。
+            let input = if mechanism == ScramMechanism::Sha1 {
+                mdb_crypto::md5::scram_sha1_password(username, password)
+            } else {
+                password.to_owned()
+            };
+            let cred = StoredKey::from_password(mechanism, &input, ScramMechanism::DEFAULT_ITERATIONS)?;
+            let mut sub = Document::new();
+            sub.insert("iterationCount", Bson::Int32(cred.iteration_count as i32));
+            sub.insert("salt", Bson::String(mdb_crypto::base64::encode(&cred.salt)));
+            sub.insert("storedKey", Bson::String(mdb_crypto::base64::encode(&cred.stored_key)));
+            sub.insert("serverKey", Bson::String(mdb_crypto::base64::encode(&cred.server_key)));
+            credentials.insert(mechanism.as_str(), Bson::Document(sub));
+        }
+        self.write_system_user_doc(username, database, Some(credentials), roles)
+    }
+
+    /// 写 / 删 `admin.system.users` 里的用户文档（`credentials` 为 `None` 表示删除）。
+    fn write_system_user_doc(
+        &self,
+        username: &str,
+        database: &str,
+        credentials: Option<Document>,
+        roles: &[Role],
+    ) -> MdbResult<()> {
+        let id = format!("{database}.{username}");
+        let coll = self.get_database("admin").get_or_create_collection("system.users");
+        let mut locked = coll.lock().unwrap();
+        match credentials {
+            None => {
+                if let Err(e) = locked.store.delete(&bson_to_key(&Bson::String(id.clone()))) {
+                    mdb_common::log_error!("mdb-server", "system.users delete failed: {e}");
+                }
+                Ok(())
+            }
+            Some(credentials) => {
+                let mut doc = Document::new();
+                doc.insert("_id", Bson::String(id.clone()));
+                doc.insert("user", Bson::String(username.to_owned()));
+                doc.insert("db", Bson::String(database.to_owned()));
+                doc.insert("credentials", Bson::Document(credentials));
+                doc.insert("roles", roles_to_bson(roles));
+                let doc_bytes = mdb_doc::codec::to_bytes(&doc)?;
+                locked.store.put(bson_to_key(&Bson::String(id)), doc_bytes).map(|_| ())
+            }
+        }
     }
 
     fn drop_user(&self, username: &str, database: &str) -> MdbResult<()> {
         let key = format!("{username}@{database}");
         let mut users = self.users.lock().unwrap();
+        let roles = users.get(&key).map(|u| u.roles.clone()).unwrap_or_default();
         users.remove(&key).ok_or_else(|| {
             MdbError::new(ErrorCode::UserNotFound, format!("User \"{username}\" not found in database \"{database}\""))
         })?;
-        Ok(())
+        drop(users);
+        self.write_system_user_doc(username, database, None, &roles)
+    }
+
+    /// 把内存里的最新角色同步回 `admin.system.users`（凭证保持不变）。
+    fn sync_system_user_roles(&self, username: &str, database: &str, roles: &[Role]) {
+        let id = format!("{database}.{username}");
+        let key = bson_to_key(&Bson::String(id.clone()));
+        let coll = self.get_database("admin").get_or_create_collection("system.users");
+        let mut locked = coll.lock().unwrap();
+        let existing = match locked.store.get(&key) {
+            Ok(Some(bytes)) => mdb_doc::codec::from_bytes(&bytes).ok(),
+            _ => None,
+        };
+        let Some(mut doc) = existing else { return; };
+        doc.insert("roles", roles_to_bson(roles));
+        match mdb_doc::codec::to_bytes(&doc) {
+            Ok(bytes) => {
+                if let Err(e) = locked.store.put(key, bytes) {
+                    mdb_common::log_error!("mdb-server", "system.users update failed: {e}");
+                }
+            }
+            Err(e) => mdb_common::log_error!("mdb-server", "system.users encode failed: {e}"),
+        }
     }
 
     fn grant_roles(&self, username: &str, database: &str, roles: Vec<Role>) -> MdbResult<()> {
@@ -1107,6 +1190,9 @@ impl ServerState {
                 user.roles.push(role);
             }
         }
+        let synced = user.roles.clone();
+        drop(users);
+        self.sync_system_user_roles(username, database, &synced);
         Ok(())
     }
 
@@ -1117,6 +1203,9 @@ impl ServerState {
             MdbError::new(ErrorCode::UserNotFound, format!("User \"{username}\" not found in database \"{database}\""))
         })?;
         user.roles.retain(|r| !roles.iter().any(|revoke| revoke.role == r.role && revoke.db == r.db));
+        let synced = user.roles.clone();
+        drop(users);
+        self.sync_system_user_roles(username, database, &synced);
         Ok(())
     }
 
@@ -1127,17 +1216,25 @@ impl ServerState {
             MdbError::new(ErrorCode::UserNotFound, format!("User \"{username}\" not found in database \"{database}\""))
         })?;
         user.roles = roles;
+        let synced = user.roles.clone();
+        drop(users);
+        self.sync_system_user_roles(username, database, &synced);
         Ok(())
     }
 
     fn change_password(&self, username: &str, database: &str, new_password: &str) -> MdbResult<()> {
         let key = format!("{username}@{database}");
-        let mut users = self.users.lock().unwrap();
-        let user = users.get_mut(&key).ok_or_else(|| {
-            MdbError::new(ErrorCode::UserNotFound, format!("User \"{username}\" not found in database \"{database}\""))
-        })?;
-        user.credential = StoredKey::from_password(ScramMechanism::Sha256, new_password, ScramMechanism::DEFAULT_ITERATIONS)?;
-        Ok(())
+        let roles;
+        {
+            let mut users = self.users.lock().unwrap();
+            let user = users.get_mut(&key).ok_or_else(|| {
+                MdbError::new(ErrorCode::UserNotFound, format!("User \"{username}\" not found in database \"{database}\""))
+            })?;
+            user.credential = StoredKey::from_password(ScramMechanism::Sha256, new_password, ScramMechanism::DEFAULT_ITERATIONS)?;
+            roles = user.roles.clone();
+        }
+        // 旧口令必须一并失效，否则 system.users 里留着旧凭证仍能登录。
+        self.persist_system_user(username, database, new_password, &roles)
     }
 
     /// 追加一条 oplog 记录（用于 Change Stream 和复制）。
@@ -1797,21 +1894,19 @@ impl Read for RustlsStream {
             self.pos += n;
             return Ok(n);
         }
-        // 从 TLS 连接读取
-        loop {
-            self.buf.clear();
-            self.buf.resize(8192, 0);
-            let n = self.conn.reader().read(&mut self.buf)?;
-            if n == 0 {
-                return Ok(0);
-            }
-            self.buf.truncate(n);
-            self.pos = 0;
-            let copy_len = n.min(buf.len());
-            buf[..copy_len].copy_from_slice(&self.buf[..copy_len]);
-            self.pos = copy_len;
-            return Ok(copy_len);
+        // 从 TLS 连接读取：一次 reader().read() 要么拿到数据要么到 EOF，
+        // 两者都会返回，这里不需要循环。
+        self.buf.clear();
+        self.buf.resize(8192, 0);
+        let n = self.conn.reader().read(&mut self.buf)?;
+        if n == 0 {
+            return Ok(0);
         }
+        self.buf.truncate(n);
+        let copy_len = n.min(buf.len());
+        buf[..copy_len].copy_from_slice(&self.buf[..copy_len]);
+        self.pos = copy_len;
+        Ok(copy_len)
     }
 }
 
@@ -2022,6 +2117,20 @@ fn requires_auth(body: &Document) -> bool {
     true
 }
 
+/// MongoDB 的 localhost exception：用户表为空时允许回环地址的连接免鉴权。
+///
+/// 没有这条规则就是死锁：`createUser` 自身也需要鉴权，而全新的实例里
+/// 没有任何用户可以用来鉴权，于是第一个用户永远创建不出来，服务端
+/// 除了 `hello`/`ping` 什么也做不了。MongoDB 用同样的机制引导第一个
+/// 管理员用户，并在用户表非空后立即失效。
+fn localhost_exception(state: &ServerState, conn: &ConnectionState) -> bool {
+    let Some(addr) = conn.peer_addr else { return false; };
+    if !addr.ip().is_loopback() {
+        return false;
+    }
+    state.users.lock().unwrap().is_empty()
+}
+
 fn extract_db(body: &Document) -> String {
     body.get_str("$db").unwrap_or("test").to_owned()
 }
@@ -2049,6 +2158,21 @@ fn cmd_doc<'a>(body: &'a Document, key: &str) -> Option<&'a Document> { body.get
 fn cmd_arr<'a>(body: &'a Document, key: &str) -> Option<&'a [Bson]> { body.get_array_ref(key) }
 fn cmd_i64(body: &Document, key: &str) -> Option<i64> { body.get_i64(key) }
 fn cmd_bool(body: &Document, key: &str) -> Option<bool> { body.get_bool(key) }
+
+/// 取命令里的操作数组（`updates` / `deletes`）。
+///
+/// OP_MSG 允许把这类数组放在 document sequence 里，而**所有**官方驱动
+/// （pymongo / node / java / go）都这么做；只查 body 会让 update/delete
+/// 一律报 "missing updates/deletes array"。
+fn cmd_array(msg: &OpMsg, key: &str) -> Option<Vec<Bson>> {
+    if let Some(arr) = msg.body.as_ref().and_then(|b| b.get(key)).and_then(|v| v.as_array()) {
+        return Some(arr.to_vec());
+    }
+    msg.document_sequences
+        .iter()
+        .find(|seq| seq.identifier == key)
+        .map(|seq| seq.documents.iter().cloned().map(Bson::Document).collect())
+}
 
 fn dispatch_command(msg: &OpMsg, connection_id: i32, topology_version: &TopologyVersion, state: &ServerState, pool: &ConnectionPool) -> OpMsg {
     let response_to = msg.request_id;
@@ -2141,7 +2265,10 @@ fn dispatch_command(msg: &OpMsg, connection_id: i32, topology_version: &Topology
         return OpMsg::reply(response_to, reply);
     }
 
-    if requires_auth(body) && conn_state.authenticated_user.is_none() {
+    if requires_auth(body)
+        && conn_state.authenticated_user.is_none()
+        && !localhost_exception(state, &conn_state)
+    {
         state.audit_log(
             AuditEventType::Authorization,
             None,
@@ -2325,6 +2452,14 @@ fn dispatch_command(msg: &OpMsg, connection_id: i32, topology_version: &Topology
         );
         return reply;
     }
+    // 事务里的第一条命令会把 `startTransaction: true` 一起塞进来（驱动不会单独
+    // 发一次 startTransaction 命令）。必须在写命令**之前**登记事务，否则这条
+    // 写操作直接落盘、缓冲区空空如也，commit 只能报 "no active transaction"。
+    if body.contains_key("startTransaction") && is_txn_write_command(body) {
+        if let Err(e) = begin_transaction(body, state) {
+            return OpMsg::reply(response_to, command_failed(&e.to_string(), ErrorCode::BadValue));
+        }
+    }
     if body.contains_key("insert") {
         let reply = handle_insert(body, msg, &db_name, state);
         let success = reply.body.as_ref().map(|b| b.get("ok").and_then(|v| v.as_f64()) == Some(1.0)).unwrap_or(false);
@@ -2360,7 +2495,7 @@ fn dispatch_command(msg: &OpMsg, connection_id: i32, topology_version: &Topology
     if body.contains_key("getMore") { return handle_get_more(body, &db_name, state, response_to); }
     if body.contains_key("findAndModify") { return handle_find_and_modify(body, &db_name, state, response_to); }
     if body.contains_key("update") {
-        let reply = handle_update(body, &db_name, state, response_to);
+        let reply = handle_update(msg, &db_name, state, response_to);
         let success = reply.body.as_ref().map(|b| b.get("ok").and_then(|v| v.as_f64()) == Some(1.0)).unwrap_or(false);
         let n = reply.body.as_ref().and_then(|b| b.get("n").and_then(|v| v.as_i64())).unwrap_or(0);
         state.audit_log(
@@ -2377,7 +2512,7 @@ fn dispatch_command(msg: &OpMsg, connection_id: i32, topology_version: &Topology
         return reply;
     }
     if body.contains_key("delete") {
-        let reply = handle_delete(body, &db_name, state, response_to);
+        let reply = handle_delete(msg, &db_name, state, response_to);
         let success = reply.body.as_ref().map(|b| b.get("ok").and_then(|v| v.as_f64()) == Some(1.0)).unwrap_or(false);
         let n = reply.body.as_ref().and_then(|b| b.get("n").and_then(|v| v.as_i64())).unwrap_or(0);
         state.audit_log(
@@ -2589,18 +2724,20 @@ fn handle_sasl_start(body: &Document, db_name: &str, conn_state: &mut Connection
 
     let resolve_result = server_scram.on_client_first(payload, &mut |username| {
         let all_docs = users_coll_ref.lock().unwrap().store.scan_all().unwrap_or_default();
+        // 只认 authSource（`$db`）里的同名用户：跨库同名不能互相登录。
+        let mech_key = mechanism.as_str();
         for (_, doc_bytes) in &all_docs {
             if let Ok(doc) = mdb_doc::codec::from_bytes(doc_bytes) {
-                if doc.get_str("user") == Some(username) {
-                    if let Some(cred_doc) = doc.get("credentials").and_then(|v| v.as_document()) {
-                        if let Some(scram_doc) = cred_doc.get("SCRAM-SHA-256").and_then(|v| v.as_document()) {
-                            let iteration_count = scram_doc.get("iterationCount").and_then(|v| v.as_i64()).unwrap_or(0) as u32;
-                            let salt_b64 = scram_doc.get("salt").and_then(|v| v.as_str()).unwrap_or("");
-                            let stored_key_b64 = scram_doc.get("storedKey").and_then(|v| v.as_str()).unwrap_or("");
-                            let server_key_b64 = scram_doc.get("serverKey").and_then(|v| v.as_str()).unwrap_or("");
-                            if let Ok(cred) = StoredKey::from_mongo_credentials(mechanism, iteration_count, salt_b64, stored_key_b64, server_key_b64) {
-                                return Some(cred);
-                            }
+                if doc.get_str("db") != Some(db_name) { continue; }
+                if doc.get_str("user") != Some(username) { continue; }
+                if let Some(cred_doc) = doc.get("credentials").and_then(|v| v.as_document()) {
+                    if let Some(scram_doc) = cred_doc.get(mech_key).and_then(|v| v.as_document()) {
+                        let iteration_count = scram_doc.get("iterationCount").and_then(|v| v.as_i64()).unwrap_or(0) as u32;
+                        let salt_b64 = scram_doc.get("salt").and_then(|v| v.as_str()).unwrap_or("");
+                        let stored_key_b64 = scram_doc.get("storedKey").and_then(|v| v.as_str()).unwrap_or("");
+                        let server_key_b64 = scram_doc.get("serverKey").and_then(|v| v.as_str()).unwrap_or("");
+                        if let Ok(cred) = StoredKey::from_mongo_credentials(mechanism, iteration_count, salt_b64, stored_key_b64, server_key_b64) {
+                            return Some(cred);
                         }
                     }
                 }
@@ -2957,17 +3094,23 @@ fn handle_insert(body: &Document, msg: &OpMsg, db_name: &str, state: &ServerStat
 
         let id_val = doc.get("_id").cloned().unwrap_or(Bson::Null);
         let id_bytes = bson_to_key(&id_val);
-        let doc_bytes = match mdb_doc::codec::to_bytes(&doc) { Ok(b) => b, Err(e) => { write_errors.push((i as i32, format!("bson encode: {e}"))); if ordered { break; } else { continue; } } };
+        let doc_bytes = match mdb_doc::codec::to_bytes(&doc) { Ok(b) => b, Err(e) => { write_errors.push((i as i32, ErrorCode::BadValue as i32, format!("bson encode: {e}"))); if ordered { break; } else { continue; } } };
         match coll_locked.store.get(&id_bytes) {
             Ok(Some(_)) => {
-                write_errors.push((i as i32, format!("E11000 duplicate key error: _id {:?}", id_debug(&id_val))));
+                write_errors.push((i as i32, ErrorCode::DuplicateKey as i32, format!("E11000 duplicate key error: _id {:?}", id_debug(&id_val))));
                 if ordered { break; } else { continue; }
             }
             Err(e) => {
-                write_errors.push((i as i32, format!("lookup _id: {e}")));
+                write_errors.push((i as i32, ErrorCode::BadValue as i32, format!("lookup _id: {e}")));
                 if ordered { break; } else { continue; }
             }
             Ok(None) => {}
+        }
+        // 唯一索引约束：`_id` 之外建了 unique 索引的字段也必须真的唯一，
+        // 否则索引只是摆设（驱动侧会表现为重复键被静默接受）。
+        if let Err(e) = coll_locked.index_manager.validate_document(&doc) {
+            write_errors.push((i as i32, ErrorCode::DuplicateKey as i32, format!("E11000 duplicate key error: {e}")));
+            if ordered { break; } else { continue; }
         }
         let record_id = coll_locked.next_record_id();
         match coll_locked.store.put(id_bytes.clone(), doc_bytes) {
@@ -2978,7 +3121,7 @@ fn handle_insert(body: &Document, msg: &OpMsg, db_name: &str, state: &ServerStat
                 oplog_entries.push((format!("{db_name}.{coll_name}"), doc.clone()));
             }
             Err(e) => {
-                write_errors.push((i as i32, format!("write: {e}")));
+                write_errors.push((i as i32, ErrorCode::WriteConflict as i32, format!("write: {e}")));
                 if ordered { break; } else { continue; }
             }
         }
@@ -2993,7 +3136,7 @@ fn handle_insert(body: &Document, msg: &OpMsg, db_name: &str, state: &ServerStat
     let mut reply = ok_body();
     reply.insert("n", Bson::Int32(n_inserted));
     if !write_errors.is_empty() {
-        let errs: Vec<Bson> = write_errors.into_iter().map(|(idx, msg)| { let mut d = Document::new(); d.insert("index", Bson::Int32(idx)); d.insert("code", Bson::Int32(ErrorCode::BadValue as i32)); d.insert("errmsg", Bson::String(msg)); Bson::Document(d) }).collect();
+        let errs: Vec<Bson> = write_errors.into_iter().map(|(idx, code, msg)| { let mut d = Document::new(); d.insert("index", Bson::Int32(idx)); d.insert("code", Bson::Int32(code)); d.insert("errmsg", Bson::String(msg)); Bson::Document(d) }).collect();
         reply.insert("writeErrors", Bson::Array(errs));
     }
     OpMsg::reply(response_to, reply)
@@ -3168,16 +3311,29 @@ fn execute_indexed_query(
         if index_fields.len() == 1 {
             record_ids = coll.index_manager.point_lookup(index_name, value);
         } else {
-            // 复合索引：构建数组形式的键
-            let mut key_parts = Vec::new();
+            // 复合索引：只有**全部**索引字段都有等值条件时才点查。
+            // 只给了前缀（典型：`{files_id: oid}` 查 GridFS 的 chunks，
+            // 索引是 files_id + n）就必须做前缀范围扫描——之前给缺失字段
+            // 填 Null 去做点查，结果永远查不到。
+            let mut key_parts: Vec<Bson> = Vec::new();
+            let mut complete = true;
             for (fname, _) in &index_fields {
-                if let Some((_, v)) = eq_conds.iter().find(|(f, _)| f == fname) {
-                    key_parts.push(v.clone());
-                } else {
-                    key_parts.push(Bson::Null);
+                match eq_conds.iter().find(|(f, _)| f == fname) {
+                    Some((_, v)) => key_parts.push(v.clone()),
+                    None => { complete = false; break; }
                 }
             }
-            record_ids = coll.index_manager.point_lookup(index_name, &Bson::Array(key_parts));
+            if complete {
+                record_ids = coll.index_manager.point_lookup(index_name, &Bson::Array(key_parts));
+            } else {
+                let mut end_parts = key_parts.clone();
+                end_parts.push(Bson::MaxKey);
+                record_ids = coll.index_manager.range_scan(
+                    index_name,
+                    &Bson::Array(key_parts),
+                    &Bson::Array(end_parts),
+                );
+            }
         }
     } else if !range_conds.is_empty() {
         // 范围查询
@@ -3441,9 +3597,10 @@ fn handle_get_more(body: &Document, db_name: &str, state: &ServerState, response
         None => OpMsg::reply(response_to, command_failed(&format!("cursor id {cursor_id} not found"), ErrorCode::CursorNotFound)),
     }
 }
-fn handle_update(body: &Document, db_name: &str, state: &ServerState, response_to: i32) -> OpMsg {
+fn handle_update(msg: &OpMsg, db_name: &str, state: &ServerState, response_to: i32) -> OpMsg {
+    let body = match &msg.body { Some(b) => b, None => return OpMsg::reply(response_to, command_failed("update: missing body", ErrorCode::BadValue)) };
     let coll_name = match cmd_str(body, "update") { Some(n) => n, None => return OpMsg::reply(response_to, command_failed("update: missing collection", ErrorCode::BadValue)) };
-    let updates = match body.get("updates").and_then(|v| v.as_array()) { Some(arr) => arr.to_vec(), None => return OpMsg::reply(response_to, command_failed("update: missing updates array", ErrorCode::BadValue)) };
+    let updates = match cmd_array(msg, "updates") { Some(arr) => arr, None => return OpMsg::reply(response_to, command_failed("update: missing updates array", ErrorCode::BadValue)) };
     let db = state.get_database(db_name);
     let coll = db.get_or_create_collection(coll_name);
 
@@ -3513,8 +3670,19 @@ fn handle_update(body: &Document, db_name: &str, state: &ServerState, response_t
 
         if matching.is_empty() {
             if upsert {
-                let mut new_doc = q.clone();
-                if let Some(u_doc) = &u { for (k, v) in u_doc.iter() { if !k.starts_with('$') { new_doc.insert(k.to_owned(), v.clone()); } } }
+                // MongoDB 语义：
+                // - 替换文档 → 新文档就是它本身；
+                // - `$` 操作符 → 以过滤条件里的等值字段为初值，再应用操作符。
+                // 早先只把过滤条件照抄一遍，`$set` 的字段根本没进去。
+                let has_ops = u.as_ref().map(|d| d.iter().any(|(k, _)| k.starts_with('$'))).unwrap_or(false);
+                let mut new_doc = Document::new();
+                match (&u, has_ops) {
+                    (Some(u_doc), false) => { for (k, v) in u_doc.iter() { new_doc.insert(k.to_owned(), v.clone()); } }
+                    _ => { for (k, v) in q.iter() { if !k.starts_with('$') { new_doc.insert(k.to_owned(), v.clone()); } } }
+                }
+                if has_ops {
+                    if let Some(u_doc) = &u { apply_update_ops(&mut new_doc, &parse_update_ops(Some(u_doc))); }
+                }
                 if !new_doc.contains_key("_id") { new_doc.insert("_id", Bson::ObjectId(new_object_id())); }
 
                 // 分片路由：为 upsert 文档添加分片分配
@@ -3535,7 +3703,13 @@ fn handle_update(body: &Document, db_name: &str, state: &ServerState, response_t
                     if coll_locked.store.put(id_bytes.clone(), doc_bytes).is_ok() {
                         coll_locked.bind_record_id(&id_bytes, record_id);
                         let _ = coll_locked.index_manager.update_indexes(&new_doc, record_id);
-                        upserted_ids.push(Bson::Int32(i as i32)); n_upserted += 1;
+                        // `upserted` 必须是 [{index, _id}]：驱动靠 `_id` 回填
+                        // `upserted_id`，只给 index 会让它KeyError。
+                        let mut upserted = Document::new();
+                        upserted.insert("index", Bson::Int32(i as i32));
+                        upserted.insert("_id", id_val.clone());
+                        upserted_ids.push(Bson::Document(upserted));
+                        n_upserted += 1;
                     }
                 }
             }
@@ -3570,13 +3744,14 @@ fn handle_update(body: &Document, db_name: &str, state: &ServerState, response_t
         }
     }
     let mut reply = ok_body(); reply.insert("n", Bson::Int32(n_modified + n_upserted)); reply.insert("nModified", Bson::Int32(n_modified));
-    if !upserted_ids.is_empty() { reply.insert("upserted", Bson::Array(upserted_ids.into_iter().map(|idx| { let mut d = Document::new(); d.insert("index", idx); Bson::Document(d) }).collect())); }
+    if !upserted_ids.is_empty() { reply.insert("upserted", Bson::Array(upserted_ids)); }
     OpMsg::reply(response_to, reply)
 }
 
-fn handle_delete(body: &Document, db_name: &str, state: &ServerState, response_to: i32) -> OpMsg {
+fn handle_delete(msg: &OpMsg, db_name: &str, state: &ServerState, response_to: i32) -> OpMsg {
+    let body = match &msg.body { Some(b) => b, None => return OpMsg::reply(response_to, command_failed("delete: missing body", ErrorCode::BadValue)) };
     let coll_name = match cmd_str(body, "delete") { Some(n) => n, None => return OpMsg::reply(response_to, command_failed("delete: missing collection", ErrorCode::BadValue)) };
-    let deletes = match body.get("deletes").and_then(|v| v.as_array()) { Some(arr) => arr.to_vec(), None => return OpMsg::reply(response_to, command_failed("delete: missing deletes array", ErrorCode::BadValue)) };
+    let deletes = match cmd_array(msg, "deletes") { Some(arr) => arr, None => return OpMsg::reply(response_to, command_failed("delete: missing deletes array", ErrorCode::BadValue)) };
     let db = state.get_database(db_name);
     let coll = match db.get_collection(coll_name) { Some(c) => c, None => { let mut r = ok_body(); r.insert("n", Bson::Int32(0)); return OpMsg::reply(response_to, r); } };
 
@@ -3787,8 +3962,29 @@ fn handle_list_indexes(body: &Document, db_name: &str, state: &ServerState, resp
     let db = state.get_database(db_name);
     let coll = match db.get_collection(coll_name) { Some(c) => c, None => return OpMsg::reply(response_to, command_failed(&format!("ns not found: {db_name}.{coll_name}"), ErrorCode::NamespaceNotFound)) };
     let coll_locked = coll.lock().unwrap();
-    let indexes = coll_locked.index_manager.list_indexes();
-    let first_batch: Vec<Bson> = indexes.iter().map(|idx_name| { let mut d = Document::new(); d.insert("v", Bson::Int32(2)); d.insert("key", Bson::Document(Document::new())); d.insert("name", Bson::String(idx_name.clone())); d.insert("ns", Bson::String(format!("{db_name}.{coll_name}"))); Bson::Document(d) }).collect();
+    let mut indexes = coll_locked.index_manager.list_indexes();
+    // MongoDB 的每个集合都有 `_id_` 索引；缺了它，驱动里"至少 2 个索引"
+    // 这类断言和按索引名的查找都会落空。
+    if !indexes.iter().any(|n| n == "_id_") {
+        indexes.insert(0, "_id_".to_owned());
+    }
+    // `key` 必须是真实的索引键模式：驱动（`index_information`、Compass、
+    // 迁移工具）据此判断索引覆盖哪些字段；返回空文档会让它们认为索引无效。
+    let first_batch: Vec<Bson> = indexes.iter().map(|idx_name| {
+        let mut key = Document::new();
+        for (field, order) in coll_locked.index_manager.index_fields(idx_name) {
+            key.insert(field, Bson::Int32(match order { SortOrder::Desc => -1, _ => 1 }));
+        }
+        if key.is_empty() && idx_name == "_id_" {
+            key.insert("_id", Bson::Int32(1));
+        }
+        let mut d = Document::new();
+        d.insert("v", Bson::Int32(2));
+        d.insert("key", Bson::Document(key));
+        d.insert("name", Bson::String(idx_name.clone()));
+        d.insert("ns", Bson::String(format!("{db_name}.{coll_name}")));
+        Bson::Document(d)
+    }).collect();
     let mut reply = ok_body(); let mut cursor_doc = Document::new(); cursor_doc.insert("id", Bson::Int64(0)); cursor_doc.insert("ns", Bson::String(format!("{db_name}.$cmd.listIndexes.{coll_name}"))); cursor_doc.insert("firstBatch", Bson::Array(first_batch)); reply.insert("cursor", Bson::Document(cursor_doc));
     OpMsg::reply(response_to, reply)
 }
@@ -3799,6 +3995,14 @@ fn handle_list_indexes(body: &Document, db_name: &str, state: &ServerState, resp
 fn handle_aggregate(body: &Document, db_name: &str, state: &ServerState, response_to: i32) -> OpMsg {
     let coll_name = match cmd_str(body, "aggregate") { Some(n) => n, None => return OpMsg::reply(response_to, command_failed("aggregate: missing collection", ErrorCode::BadValue)) };
     let pipeline_arr = body.get("pipeline").and_then(|v| v.as_array()).map(|a| a.to_vec()).unwrap_or_default();
+    // 官方驱动是用 `aggregate` + `$changeStream` 打开 change stream 的，
+    // 不是 `watch` 命令。不转发的话会返回空游标，客户端连事件都收不到。
+    if pipeline_arr.iter().any(|s| s.as_document().map(|d| d.contains_key("$changeStream")).unwrap_or(false)) {
+        let mut watch_body = body.clone();
+        watch_body.remove("aggregate");
+        watch_body.insert("watch", Bson::String(coll_name.to_owned()));
+        return handle_watch(&watch_body, db_name, state, response_to);
+    }
     let batch_size = cmd_doc(body, "cursor").and_then(|c| c.get("batchSize")).and_then(|v| v.as_i64()).unwrap_or(101) as usize;
     let db = state.get_database(db_name);
     let coll = match db.get_collection(coll_name) {
@@ -3891,7 +4095,12 @@ fn parse_pipeline_stage(doc: &Document) -> Option<PipelineStage> {
                     if let Some((op_name, field)) = a.iter().next() {
                         let f = field.as_str().unwrap_or("").to_owned();
                         let acc = match op_name {
-                            "$sum" => mdb_query::aggregation::Accumulator::Sum(f),
+                            // `{$sum: 1}` 是计数写法（pymongo 的 count_documents 就用它），
+                            // 不能当成字段路径，否则结果恒为 0。
+                            "$sum" => match field.as_f64() {
+                                Some(n) => mdb_query::aggregation::Accumulator::SumConst(n),
+                                None => mdb_query::aggregation::Accumulator::Sum(f),
+                            },
                             "$avg" => mdb_query::aggregation::Accumulator::Avg(f),
                             "$min" => mdb_query::aggregation::Accumulator::Min(f),
                             "$max" => mdb_query::aggregation::Accumulator::Max(f),
@@ -5342,6 +5551,16 @@ fn handle_watch(body: &Document, db_name: &str, state: &ServerState, response_to
     if let Some(token) = resume_token {
         reply.insert("postBatchResumeToken", token);
     }
+    // 驱动（pymongo）在 change stream 应答里强制要求 `operationTime`，
+    // 缺了它会在客户端侧直接抛错，一条事件也读不到。
+    let operation_time = {
+        let guard = state.replica_set.lock().unwrap();
+        guard.as_ref().and_then(|repl| repl.replica_set.oplog().last_entry()).map(|e| e.ts)
+    };
+    // 副本集还没起来（一条 oplog 都没有）时也要给：字段本身是必填项，
+    // 用当前时间兜底，保证驱动不会在解析应答阶段就失败。
+    let ts = operation_time.unwrap_or_else(|| mdb_doc::Timestamp::new(now_secs, 0));
+    reply.insert("operationTime", Bson::Timestamp(ts));
     OpMsg::reply(response_to, reply)
 }
 
@@ -5527,19 +5746,38 @@ fn update_session_read_ts(state: &ServerState, body: &Document) {
     }
 }
 
-fn handle_start_transaction(body: &Document, response_to: i32, state: &ServerState) -> OpMsg {
+/// 打开会话上的事务（登记状态 + 建缓冲区），不负责回包。
+fn begin_transaction(body: &Document, state: &ServerState) -> MdbResult<()> {
     let lsid = match extract_lsid(body) {
         Some(l) => l,
-        None => return OpMsg::reply(response_to, command_failed("startTransaction: missing lsid", ErrorCode::BadValue)),
+        None => return Err(MdbError::new(ErrorCode::BadValue, "startTransaction: missing lsid")),
     };
     let mut sessions = state.sessions.lock().unwrap();
     let session = sessions.entry(lsid).or_insert_with(|| Session::new(0));
     session.txn_active = true;
     session.txn_buffer = Some(Vec::new());
     session.last_used = Instant::now();
-    let mut reply = ok_body();
-    reply.insert("ok", Bson::Double(1.0));
-    OpMsg::reply(response_to, reply)
+    Ok(())
+}
+
+/// 事务里的第一条命令会带上 `startTransaction: true`（drviers 不会单独发一次
+/// startTransaction 命令）。出现这些键说明这条报文是"写命令 + 开事务"。
+fn is_txn_write_command(body: &Document) -> bool {
+    const KEYS: &[&str] = &[
+        "insert", "update", "delete", "findAndModify", "find", "aggregate", "count", "distinct", "getMore",
+    ];
+    KEYS.iter().any(|k| body.contains_key(k))
+}
+
+fn handle_start_transaction(body: &Document, response_to: i32, state: &ServerState) -> OpMsg {
+    match begin_transaction(body, state) {
+        Ok(()) => {
+            let mut reply = ok_body();
+            reply.insert("ok", Bson::Double(1.0));
+            OpMsg::reply(response_to, reply)
+        }
+        Err(e) => OpMsg::reply(response_to, command_failed(&e.to_string(), ErrorCode::BadValue)),
+    }
 }
 
 fn handle_commit_transaction(body: &Document, response_to: i32, state: &ServerState) -> OpMsg {
@@ -6369,10 +6607,14 @@ pub(crate) fn command_failed(errmsg: &str, code: ErrorCode) -> Document { let mu
 
 fn build_cursor_response(response_to: i32, cursor: &mdb_query::cursor::Cursor, cursor_mgr: &SharedCursorManager) -> OpMsg {
     let mut reply = ok_body();
-    let mut cursor_doc = Document::new(); cursor_doc.insert("id", Bson::Int64(cursor.id)); cursor_doc.insert("ns", Bson::String(cursor.namespace.clone()));
+    // 耗尽的游标必须报 `id = 0`（驱动据此停止 getMore）。注意 `Document::insert`
+    // 是追加语义：先写 id 再覆盖会产出含重复键的非法 BSON——我们自己的解析器
+    // 会直接拒绝这种报文，所以只能一次写对。
+    let cursor_id: i64 = if cursor.exhausted { 0 } else { cursor.id };
+    let mut cursor_doc = Document::new(); cursor_doc.insert("id", Bson::Int64(cursor_id)); cursor_doc.insert("ns", Bson::String(cursor.namespace.clone()));
     cursor_doc.insert("firstBatch", Bson::Array(cursor.batch.iter().cloned().map(Bson::Document).collect()));
     reply.insert("cursor", Bson::Document(cursor_doc));
-    if cursor.exhausted { if let Some(Bson::Document(d)) = reply.get_mut("cursor") { d.insert("id", Bson::Int64(0)); } cursor_mgr.inner().kill_cursor(cursor.id); }
+    if cursor.exhausted { cursor_mgr.inner().kill_cursor(cursor.id); }
     OpMsg::reply(response_to, reply)
 }
 
@@ -6790,10 +7032,15 @@ fn apply_projection(doc: &Document, projection: &Document, include_mode: bool) -
 // Update operators
 // ---------------------------------------------------------------------------
 
-enum UpdateOp { Set(Document), Unset(Vec<String>), Inc(Document), Push(Document), Pull(Document), PullAll(Document), Rename(Document), Min(Document), Max(Document), Mul(Document), CurrentDate(Document), AddToSet(Document), Bit(Document) }
+enum UpdateOp { Replace(Document), Set(Document), Unset(Vec<String>), Inc(Document), Push(Document), Pull(Document), PullAll(Document), Rename(Document), Min(Document), Max(Document), Mul(Document), CurrentDate(Document), AddToSet(Document), Bit(Document) }
 
 fn parse_update_ops(u: Option<&Document>) -> Vec<UpdateOp> {
     let u = match u { Some(d) => d, None => return Vec::new() };
+    // 替换文档：一个 `$` 开头的键都没有 → 整篇替换，而不是"什么都不做"。
+    // 缺了这条，`replace_one()` / `findOneAndReplace` 只会安静地不生效。
+    if !u.iter().any(|(k, _)| k.starts_with('$')) {
+        return vec![UpdateOp::Replace(u.clone())];
+    }
     let mut ops = Vec::new();
     for (key, val) in u.iter() {
         match key {
@@ -6819,6 +7066,12 @@ fn parse_update_ops(u: Option<&Document>) -> Vec<UpdateOp> {
 fn apply_update_ops(doc: &mut Document, ops: &[UpdateOp]) {
     for op in ops {
         match op {
+            // `_id` 不可变：替换文档里带不带 `_id`，结果都必须还是原来那个。
+            UpdateOp::Replace(replacement) => {
+                let id = doc.get("_id").cloned();
+                *doc = replacement.clone();
+                if let Some(id) = id { doc.set("_id".to_owned(), id); }
+            }
             UpdateOp::Set(fields) => { for (k, v) in fields.iter() { doc.set(k.clone(), v.clone()); } }
             UpdateOp::Unset(fields) => { for k in fields { doc.remove(k); } }
             UpdateOp::Inc(fields) => { for (k, v) in fields.iter() { let cur = doc.get(k).and_then(|v| match v { Bson::Int32(n) => Some(*n as f64), Bson::Int64(n) => Some(*n as f64), Bson::Double(n) => Some(*n), _ => None }).unwrap_or(0.0); let inc = match v { Bson::Int32(n) => *n as f64, Bson::Int64(n) => *n as f64, Bson::Double(n) => *n, _ => 0.0 }; let r = cur + inc; if r.fract() == 0.0 && r.abs() < i32::MAX as f64 { doc.set(k.clone(), Bson::Int32(r as i32)); } else { doc.set(k.clone(), Bson::Double(r)); } } }

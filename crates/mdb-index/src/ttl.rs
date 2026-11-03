@@ -119,7 +119,8 @@ impl TtlIndex {
         self.entries.is_empty()
     }
 
-    /// 插入一个带 TTL 的条目。`current_time` 为 Unix 毫秒。
+    /// 插入一个带 TTL 的条目。`base_time` 为**过期基准**（Unix 毫秒），
+    /// 通常取自文档的 TTL 字段（日期或 Unix 秒），而不是写入时刻。
     pub fn insert(&mut self, key: Bson, record_id: RecordId, current_time: i64) {
         self.btree.insert(key.clone(), record_id);
         self.entries.insert(
@@ -129,8 +130,11 @@ impl TtlIndex {
     }
 
     /// 判断条目是否已过期。
-    pub fn is_expired(&self, inserted_at: i64, current_time: i64) -> bool {
-        current_time - inserted_at >= self.expire_after_seconds
+    ///
+    /// `base_time` 是**文档里 TTL 字段的值**（毫秒），不是写入时间；
+    /// 过期条件与 MongoDB 一致：`now >= base + expireAfterSeconds`。
+    pub fn is_expired(&self, base_time: i64, current_time: i64) -> bool {
+        current_time >= base_time + self.expire_after_seconds.saturating_mul(1000)
     }
 
     /// 扫描并返回所有过期的 record_id（不清除，由调用方负责删除）。
@@ -285,28 +289,28 @@ mod tests {
     #[test]
     fn is_expired_logic() {
         let idx = TtlIndex::new("ttl_test", 3600, 4);
-        assert!(!idx.is_expired(1000, 4500)); // 3500ms < 3600s
-        assert!(idx.is_expired(1000, 4601)); // 3601ms >= 3600s
+        // base=1000ms，expireAfterSeconds=3600 → 3_601_000ms 时到期
+        assert!(!idx.is_expired(1_000, 3_600_000));
+        assert!(idx.is_expired(1_000, 3_601_000));
     }
 
     #[test]
     fn insert_and_scan_expired() {
         let mut idx = TtlIndex::new("ttl_test", 1000, 4);
-        idx.insert(Bson::Int32(1), 1, 1000);
-        idx.insert(Bson::Int32(2), 2, 2000);
-        idx.insert(Bson::Int32(3), 3, 3000);
+        idx.insert(Bson::Int32(1), 1, 1_000);
+        idx.insert(Bson::Int32(2), 2, 2_000);
+        idx.insert(Bson::Int32(3), 3, 3_000);
 
-        // 在 t=2500 时，只有 record_id=1 过期
-        let expired = idx.scan_expired(2500);
+        // expireAfterSeconds=1000 → 到期时刻分别是 base+1_000_000
+        let mut expired = idx.scan_expired(1_001_000);
+        expired.sort();
         assert_eq!(expired, vec![1]);
 
-        // 在 t=3500 时，record_id=1,2 都过期
-        let mut expired = idx.scan_expired(3500);
+        let mut expired = idx.scan_expired(1_002_000);
         expired.sort();
         assert_eq!(expired, vec![1, 2]);
 
-        // 在 t=4001 时，全部过期
-        let mut expired = idx.scan_expired(4001);
+        let mut expired = idx.scan_expired(1_003_000);
         expired.sort();
         assert_eq!(expired, vec![1, 2, 3]);
     }
@@ -319,8 +323,8 @@ mod tests {
 
         assert!(idx.remove(&Bson::Int32(1), 1));
         assert_eq!(idx.len(), 1);
-        // record 2 is still present and IS expired at time 5000
-        assert_eq!(idx.scan_expired(5000), vec![2]);
+        // record 2 的基准是 2000ms，1_002_000ms 时到期
+        assert_eq!(idx.scan_expired(1_002_000), vec![2]);
         assert_eq!(idx.point_lookup(&Bson::Int32(2)), vec![2]);
     }
 
@@ -342,15 +346,15 @@ mod tests {
     fn scan_expired_batch() {
         let mut idx = TtlIndex::new("ttl_test", 1000, 4);
         for i in 0..10 {
-            idx.insert(Bson::Int32(i), i as u64, i as i64 * 1000);
+            idx.insert(Bson::Int32(i), i as u64, i as i64 * 1_000);
         }
 
-        // 在 t=5000 时，record_id 0-4 过期
-        let (batch1, has_more1) = idx.scan_expired_batch(5000, Some(3));
+        // t=1_004_000 时 record_id 0-4 过期（各自 base + 1_000_000）
+        let (batch1, has_more1) = idx.scan_expired_batch(1_004_000, Some(3));
         assert_eq!(batch1.len(), 3);
         assert!(has_more1);
 
-        let (batch2, has_more2) = idx.scan_expired_batch(5000, Some(10));
+        let (batch2, has_more2) = idx.scan_expired_batch(1_004_000, Some(10));
         assert_eq!(batch2.len(), 5);
         assert!(!has_more2);
     }
@@ -374,7 +378,7 @@ mod tests {
         idx.insert(Bson::Int32(1), 1, 1000);
         idx.insert(Bson::Int32(2), 2, 2000);
 
-        let deleted = idx.run_cleanup(3500);
+        let deleted = idx.run_cleanup(2_000_000);
         assert_eq!(deleted, 2);
         assert_eq!(idx.len(), 0);
 

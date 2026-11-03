@@ -57,16 +57,15 @@ public class MdbClient implements AutoCloseable {
      */
     public static MdbClient create(String host, int port) {
         MongoClientSettings.Builder builder = MongoClientSettings.builder()
+                .applyConnectionString(new ConnectionString("mongodb://" + host + ":" + port))
                 .applyToConnectionPoolSettings(connBuilder -> connBuilder
-                        .maxConnectionPoolSize(100)
-                        .minConnectionPoolSize(5)
+                        .maxSize(100)
+                        .minSize(5)
                         .maxWaitTime(5000, TimeUnit.MILLISECONDS)
                         .maxConnectionIdleTime(60000, TimeUnit.MILLISECONDS))
                 .applyToSocketSettings(socketBuilder -> socketBuilder
                         .connectTimeout(10000, TimeUnit.MILLISECONDS)
-                        .readTimeout(30000, TimeUnit.MILLISECONDS))
-                .applyToClusterSettings(clusterBuilder -> clusterBuilder
-                        .applyHostListConnectionString("mongodb://" + host + ":" + port));
+                        .readTimeout(30000, TimeUnit.MILLISECONDS));
 
         MongoClientSettings settings = builder.build();
         MongoClient client = MongoClients.create(settings);
@@ -105,8 +104,8 @@ public class MdbClient implements AutoCloseable {
         MongoClientSettings settings = MongoClientSettings.builder()
                 .applyConnectionString(new ConnectionString(uri))
                 .applyToConnectionPoolSettings(connBuilder -> connBuilder
-                        .maxConnectionPoolSize(100)
-                        .minConnectionPoolSize(5))
+                        .maxSize(100)
+                        .minSize(5))
                 .applyToSocketSettings(socketBuilder -> socketBuilder
                         .connectTimeout(10000, java.util.concurrent.TimeUnit.MILLISECONDS)
                         .readTimeout(30000, java.util.concurrent.TimeUnit.MILLISECONDS))

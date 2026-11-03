@@ -326,6 +326,21 @@ impl IndexManager {
         Ok(())
     }
 
+    /// TTL 过期基准（毫秒）：日期直接取毫秒；整数按 Unix 秒处理。
+    ///
+    /// 基准必须是**文档里 TTL 字段的值**：早先用"写入时刻"做基准，
+    /// 结果文档只在插入后经过 `expireAfterSeconds` 才过期，字段里写
+    /// 多久以前的时间都不生效——这与 MongoDB 自建索引的语义不符。
+    fn ttl_base_ms(value: &Bson) -> Option<i64> {
+        match value {
+            Bson::DateTime(ms) => Some(*ms),
+            Bson::Int32(secs) => Some(i64::from(*secs).saturating_mul(1000)),
+            Bson::Int64(secs) => Some(secs.saturating_mul(1000)),
+            Bson::Double(d) => Some((*d as i64) * 1000),
+            _ => None,
+        }
+    }
+
     /// 向所有索引写入文档字段。
     pub fn update_indexes(&mut self, doc: &Document, record_id: RecordId) -> MdbResult<()> {
         // BTree / Unique 索引
@@ -360,13 +375,11 @@ impl IndexManager {
                 }
                 IndexType::TTL => {
                     if let Some(key) = extract_compound_key(doc, &spec.fields) {
-                        if let Some(idx) = self.indexes.get_mut(&name) {
-                            if let Some(ttl_idx) = idx.downcast_mut::<TtlIndex>() {
-                                let now = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|d| d.as_millis() as i64)
-                                    .unwrap_or(0);
-                                ttl_idx.insert(key, record_id, now);
+                        if let Some(base_ms) = Self::ttl_base_ms(&key) {
+                            if let Some(idx) = self.indexes.get_mut(&name) {
+                                if let Some(ttl_idx) = idx.downcast_mut::<TtlIndex>() {
+                                    ttl_idx.insert(key, record_id, base_ms);
+                                }
                             }
                         }
                     }
@@ -929,8 +942,8 @@ mod tests {
         // 执行清理（所有文档都会过期）
         let results = mgr.run_ttl_cleanup();
         assert_eq!(results.len(), 1);
-        // 检查返回的删除数量
-        assert!(results[0].1 >= 0);
+        // 删除数是 usize，`>= 0` 恒成立；这里真正要保证的是清理确实删掉了东西。
+        assert!(results[0].1 > 0, "TTL cleanup removed nothing: {results:?}");
     }
 
     #[test]

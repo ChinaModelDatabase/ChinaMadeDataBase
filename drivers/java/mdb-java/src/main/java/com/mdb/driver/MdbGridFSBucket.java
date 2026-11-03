@@ -5,6 +5,7 @@ import com.mongodb.client.gridfs.GridFSBuckets;
 import com.mongodb.client.gridfs.GridFSDownloadStream;
 import com.mongodb.client.gridfs.GridFSFindIterable;
 import com.mongodb.client.gridfs.GridFSUploadStream;
+import com.mongodb.client.gridfs.model.GridFSFile;
 import com.mongodb.client.MongoDatabase;
 import org.bson.BsonObjectId;
 import org.bson.BsonValue;
@@ -78,8 +79,7 @@ public class MdbGridFSBucket {
      */
     public ObjectId uploadFromBytes(String filename, byte[] data) {
         ByteArrayInputStream inputStream = new ByteArrayInputStream(data);
-        BsonObjectId id = bucket.uploadFromStream(filename, inputStream);
-        return id.getValue();
+        return bucket.uploadFromStream(filename, inputStream);
     }
 
     /**
@@ -90,8 +90,7 @@ public class MdbGridFSBucket {
      * @return the ObjectId of the uploaded file
      */
     public ObjectId uploadFromStream(String filename, InputStream inputStream) {
-        BsonObjectId id = bucket.uploadFromStream(filename, inputStream);
-        return id.getValue();
+        return bucket.uploadFromStream(filename, inputStream);
     }
 
     /**
@@ -125,7 +124,17 @@ public class MdbGridFSBucket {
     public List<Document> find(Document filter) {
         GridFSFindIterable iterable = bucket.find(filter);
         List<Document> results = new ArrayList<>();
-        for (org.bson.Document doc : iterable) {
+        // 驱动返回的是 GridFSFile（元数据视图），不是 files 集合里的原始文档，
+        // 这里按 MongoDB 的 files 文档形状展开，保持与 find 的返回类型一致。
+        for (GridFSFile file : iterable) {
+            Document doc = new Document("_id", file.getId())
+                    .append("filename", file.getFilename())
+                    .append("length", file.getLength())
+                    .append("chunkSize", file.getChunkSize())
+                    .append("uploadDate", file.getUploadDate());
+            if (file.getMetadata() != null) {
+                doc.append("metadata", file.getMetadata());
+            }
             results.add(doc);
         }
         return results;

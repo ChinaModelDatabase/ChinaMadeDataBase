@@ -9,6 +9,8 @@ description = "mdb 客户端：替代 mongosh"
 
 [dependencies]
 mdb-common = { workspace = true }
+mdb-doc = { workspace = true }
+mdb-wire = { workspace = true }
 
 [lints.rust]
 missing_debug_implementations = "warn"
